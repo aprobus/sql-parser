@@ -1,0 +1,6 @@
+[package]
+name = "sql-parser"
+version = "0.1.0"
+authors = ["Aaron Probus <aprobus15@gmail.com>"]
+
+[dependencies]
