@@ -10,7 +10,14 @@ pub enum SqlType {
     From,
     Literal,
     Separator,
+    OpenParen,
+    CloseParen,
     Where,
+    Order,
+    Group,
+    By,
+    Asc,
+    Desc,
 
     GreaterThan,
     GreaterThanEqual,
@@ -207,6 +214,8 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "select", sql_type: SqlType::Select }),
             Box::new(KeywordTokenParser{ text: "*", sql_type: SqlType::Star }),
             Box::new(KeywordTokenParser{ text: ",", sql_type: SqlType::Separator }),
+            Box::new(KeywordTokenParser{ text: "(", sql_type: SqlType::OpenParen }),
+            Box::new(KeywordTokenParser{ text: ")", sql_type: SqlType::CloseParen }),
             Box::new(KeywordTokenParser{ text: "from", sql_type: SqlType::From }),
             Box::new(KeywordTokenParser{ text: "and", sql_type: SqlType::And }),
             Box::new(KeywordTokenParser{ text: "or", sql_type: SqlType::Or }),
@@ -216,6 +225,11 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "<", sql_type: SqlType::LessThan }),
             Box::new(KeywordTokenParser{ text: "<=", sql_type: SqlType::LessThanEqual }),
             Box::new(KeywordTokenParser{ text: "=", sql_type: SqlType::Equal }),
+            Box::new(KeywordTokenParser{ text: "order", sql_type: SqlType::Order }),
+            Box::new(KeywordTokenParser{ text: "group", sql_type: SqlType::Group }),
+            Box::new(KeywordTokenParser{ text: "by", sql_type: SqlType::By }),
+            Box::new(KeywordTokenParser{ text: "asc", sql_type: SqlType::Asc }),
+            Box::new(KeywordTokenParser{ text: "desc", sql_type: SqlType::Desc }),
             Box::new(TextTokenParser::new()),
             Box::new(IntTokenParser::new()),
             Box::new(FloatTokenParser::new()),
@@ -282,7 +296,7 @@ mod tests {
 
     #[test]
     fn it_selects_fields() {
-        let mut tokenizer = SqlTokenizer::new(&"select color, size from bananas where size > 1.2 and color = 'yellow'");
+        let mut tokenizer = SqlTokenizer::new(&"select color, size from bananas where (size > 1.2 or size <= 2) and color = 'yellow' order by size asc");
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Select, text: "select".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "color".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Separator, text: ",".to_string() }));
@@ -290,13 +304,23 @@ mod tests {
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::From, text: "from".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "bananas".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Where, text: "where".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::OpenParen, text: "(".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "size".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::GreaterThan, text: ">".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Float, text: "1.2".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Or, text: "or".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "size".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::LessThanEqual, text: "<=".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Int, text: "2".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::CloseParen, text: ")".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::And, text: "and".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "color".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Equal, text: "=".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Text, text: "yellow".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Order, text: "order".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::By, text: "by".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "size".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Asc, text: "asc".to_string() }));
         assert_eq!(tokenizer.next(), None);
     }
 }
