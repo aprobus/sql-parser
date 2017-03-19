@@ -21,6 +21,9 @@ pub enum SqlType {
     Asc,
     Desc,
 
+    Limit,
+    Offset,
+
     On,
     Inner,
     Outer,
@@ -248,6 +251,8 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "full", sql_type: SqlType::Inner }),
             Box::new(KeywordTokenParser{ text: "left", sql_type: SqlType::Inner }),
             Box::new(KeywordTokenParser{ text: "right", sql_type: SqlType::Inner }),
+            Box::new(KeywordTokenParser{ text: "limit", sql_type: SqlType::Limit }),
+            Box::new(KeywordTokenParser{ text: "offset", sql_type: SqlType::Offset }),
             Box::new(TextTokenParser::new()),
             Box::new(IntTokenParser::new()),
             Box::new(FloatTokenParser::new()),
@@ -369,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let mut tokenizer = SqlTokenizer::new(&"select people.* from people inner join pets on people.id = pets.person_id");
+        let mut tokenizer = SqlTokenizer::new(&"select people.* from people inner join pets on people.id = pets.person_id limit 4 offset 2");
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Select, text: "select".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "people".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Dot, text: ".".to_string() }));
@@ -387,6 +392,10 @@ mod tests {
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "pets".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Dot, text: ".".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "person_id".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Limit, text: "limit".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Int, text: "4".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Offset, text: "offset".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Int, text: "2".to_string() }));
         assert_eq!(tokenizer.next(), None);
     }
 }
