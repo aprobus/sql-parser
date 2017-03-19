@@ -48,8 +48,8 @@ pub enum SqlType {
 
 #[derive(PartialEq, Debug)]
 pub struct Token {
-    sql_type: SqlType,
-    text: String
+    pub sql_type: SqlType,
+    pub text: String
 }
 
 trait TokenParser {
@@ -221,7 +221,7 @@ pub struct SqlTokenizer<'a> {
 }
 
 impl <'a> SqlTokenizer<'a> {
-    fn new(sql: &str) -> SqlTokenizer {
+    pub fn new(sql: &str) -> SqlTokenizer {
         let token_parsers: Vec<Box<TokenParser>> = vec![
             Box::new(WhitespaceTokenParser { }),
             Box::new(KeywordTokenParser{ text: "select", sql_type: SqlType::Select }),
