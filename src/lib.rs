@@ -10,14 +10,21 @@ pub enum SqlType {
     From,
     Literal,
     Separator,
-    Whitespace,
     Where,
-    Float,
-    Int,
+
     GreaterThan,
     GreaterThanEqual,
     LessThan,
-    LessThanEqual
+    LessThanEqual,
+    Equal,
+    And,
+    Or,
+
+    Float,
+    Int,
+
+    Whitespace,
+    Text
 }
 
 #[derive(PartialEq, Debug)]
@@ -143,6 +150,51 @@ impl TokenParser for IntTokenParser {
     }
 }
 
+struct TextTokenParser { }
+
+impl TextTokenParser {
+    fn new() -> TextTokenParser {
+        TextTokenParser { }
+    }
+}
+
+impl TokenParser for TextTokenParser {
+    fn parse(&self, text: &str) -> Option<Token> {
+        let mut chars = text.chars();
+        if chars.next() != Some('\'') {
+            return None;
+        }
+
+        let mut parsed_text = String::new();
+        let mut previous_char = None;
+        let mut has_end_quote = false;
+
+        for next_char in chars {
+            if has_end_quote {
+                return None;
+            }
+
+            if next_char == '\'' {
+                if previous_char == Some('\\') {
+                    parsed_text.pop();
+                } else {
+                    has_end_quote = true;
+                }
+            }
+
+            parsed_text.push(next_char);
+            previous_char = Some(next_char);
+        }
+
+        if has_end_quote {
+            parsed_text.pop();
+            Some(Token { text: parsed_text, sql_type: SqlType::Text })
+        } else {
+            None
+        }
+    }
+}
+
 pub struct SqlTokenizer<'a> {
     sql_chars: Peekable<Chars<'a>>,
     token_parsers: Vec<Box<TokenParser>>
@@ -156,11 +208,15 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "*", sql_type: SqlType::Star }),
             Box::new(KeywordTokenParser{ text: ",", sql_type: SqlType::Separator }),
             Box::new(KeywordTokenParser{ text: "from", sql_type: SqlType::From }),
+            Box::new(KeywordTokenParser{ text: "and", sql_type: SqlType::And }),
+            Box::new(KeywordTokenParser{ text: "or", sql_type: SqlType::Or }),
             Box::new(KeywordTokenParser{ text: "where", sql_type: SqlType::Where }),
             Box::new(KeywordTokenParser{ text: ">", sql_type: SqlType::GreaterThan }),
             Box::new(KeywordTokenParser{ text: ">=", sql_type: SqlType::GreaterThanEqual }),
             Box::new(KeywordTokenParser{ text: "<", sql_type: SqlType::LessThan }),
             Box::new(KeywordTokenParser{ text: "<=", sql_type: SqlType::LessThanEqual }),
+            Box::new(KeywordTokenParser{ text: "=", sql_type: SqlType::Equal }),
+            Box::new(TextTokenParser::new()),
             Box::new(IntTokenParser::new()),
             Box::new(FloatTokenParser::new()),
             Box::new(LiteralTokenParser::new())
@@ -226,7 +282,7 @@ mod tests {
 
     #[test]
     fn it_selects_fields() {
-        let mut tokenizer = SqlTokenizer::new(&"select color, size from bananas where size > 1.2");
+        let mut tokenizer = SqlTokenizer::new(&"select color, size from bananas where size > 1.2 and color = 'yellow'");
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Select, text: "select".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "color".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Separator, text: ",".to_string() }));
@@ -237,6 +293,10 @@ mod tests {
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "size".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::GreaterThan, text: ">".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Float, text: "1.2".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::And, text: "and".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "color".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Equal, text: "=".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Text, text: "yellow".to_string() }));
         assert_eq!(tokenizer.next(), None);
     }
 }
