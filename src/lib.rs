@@ -16,8 +16,17 @@ pub enum SqlType {
     Order,
     Group,
     By,
+    Dot,
+    Having,
     Asc,
     Desc,
+
+    On,
+    Inner,
+    Outer,
+    Left,
+    Right,
+    Join,
 
     GreaterThan,
     GreaterThanEqual,
@@ -104,6 +113,7 @@ impl LiteralTokenParser {
         literal_chars.insert('x');
         literal_chars.insert('y');
         literal_chars.insert('z');
+        literal_chars.insert('_');
 
         LiteralTokenParser {
             letters: literal_chars
@@ -219,6 +229,8 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "from", sql_type: SqlType::From }),
             Box::new(KeywordTokenParser{ text: "and", sql_type: SqlType::And }),
             Box::new(KeywordTokenParser{ text: "or", sql_type: SqlType::Or }),
+            Box::new(KeywordTokenParser{ text: "on", sql_type: SqlType::On }),
+            Box::new(KeywordTokenParser{ text: ".", sql_type: SqlType::Dot }),
             Box::new(KeywordTokenParser{ text: "where", sql_type: SqlType::Where }),
             Box::new(KeywordTokenParser{ text: ">", sql_type: SqlType::GreaterThan }),
             Box::new(KeywordTokenParser{ text: ">=", sql_type: SqlType::GreaterThanEqual }),
@@ -227,9 +239,15 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "=", sql_type: SqlType::Equal }),
             Box::new(KeywordTokenParser{ text: "order", sql_type: SqlType::Order }),
             Box::new(KeywordTokenParser{ text: "group", sql_type: SqlType::Group }),
+            Box::new(KeywordTokenParser{ text: "having", sql_type: SqlType::Having }),
             Box::new(KeywordTokenParser{ text: "by", sql_type: SqlType::By }),
             Box::new(KeywordTokenParser{ text: "asc", sql_type: SqlType::Asc }),
             Box::new(KeywordTokenParser{ text: "desc", sql_type: SqlType::Desc }),
+            Box::new(KeywordTokenParser{ text: "join", sql_type: SqlType::Join }),
+            Box::new(KeywordTokenParser{ text: "inner", sql_type: SqlType::Inner }),
+            Box::new(KeywordTokenParser{ text: "full", sql_type: SqlType::Inner }),
+            Box::new(KeywordTokenParser{ text: "left", sql_type: SqlType::Inner }),
+            Box::new(KeywordTokenParser{ text: "right", sql_type: SqlType::Inner }),
             Box::new(TextTokenParser::new()),
             Box::new(IntTokenParser::new()),
             Box::new(FloatTokenParser::new()),
@@ -321,6 +339,54 @@ mod tests {
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::By, text: "by".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "size".to_string() }));
         assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Asc, text: "asc".to_string() }));
+        assert_eq!(tokenizer.next(), None);
+    }
+
+    #[test]
+    fn test_grouping() {
+        let mut tokenizer = SqlTokenizer::new(&"select age, count(*) from people group by age having count(*) > 5");
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Select, text: "select".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "age".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Separator, text: ",".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "count".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::OpenParen, text: "(".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Star, text: "*".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::CloseParen, text: ")".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::From, text: "from".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "people".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Group, text: "group".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::By, text: "by".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "age".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Having, text: "having".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "count".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::OpenParen, text: "(".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Star, text: "*".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::CloseParen, text: ")".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::GreaterThan, text: ">".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Int, text: "5".to_string() }));
+        assert_eq!(tokenizer.next(), None);
+    }
+
+    #[test]
+    fn test_join() {
+        let mut tokenizer = SqlTokenizer::new(&"select people.* from people inner join pets on people.id = pets.person_id");
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Select, text: "select".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "people".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Dot, text: ".".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Star, text: "*".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::From, text: "from".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "people".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Inner, text: "inner".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Join, text: "join".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "pets".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::On, text: "on".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "people".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Dot, text: ".".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "id".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Equal, text: "=".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "pets".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Dot, text: ".".to_string() }));
+        assert_eq!(tokenizer.next(), Some(Token { sql_type: SqlType::Literal, text: "person_id".to_string() }));
         assert_eq!(tokenizer.next(), None);
     }
 }
