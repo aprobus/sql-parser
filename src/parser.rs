@@ -56,12 +56,36 @@ fn parse_from <T> (lexer: &mut Peekable<T>) -> ParseTree
     ParseTree { token: from_token, children: children }
 }
 
+fn parse_where <T> (lexer: &mut Peekable<T>) -> Option<ParseTree>
+    where T: Iterator<Item = Token> {
+    if let Some(where_token) = lexer.peek().as_ref() {
+        if where_token.sql_type != SqlType::Where {
+            return None;
+        }
+    } else {
+        return None;
+    }
+
+    let where_token = lexer.next();
+
+    let left = ParseTree { token: lexer.next(), children: vec![] };
+    let condition = ParseTree { token: lexer.next(), children: vec![] };
+    let right = ParseTree { token: lexer.next(), children: vec![] };
+    let mut children = vec![left, condition, right];
+
+    Some(ParseTree { token: where_token, children: children })
+}
+
 fn parse_query <T> (lexer: &mut Peekable<T>) -> ParseTree
     where T: Iterator<Item = Token> {
     let mut children = Vec::new();
 
     children.push(parse_select(lexer));
     children.push(parse_from(lexer));
+
+    if let Some(where_tree) = parse_where(lexer) {
+        children.push(where_tree);
+    }
 
     ParseTree { token: None, children: children }
 }
@@ -80,17 +104,31 @@ mod tests {
 
     #[test]
     fn test_simple_query() {
-        let parse_tree = parse(SqlTokenizer::new(&"select * from people"));
+        let parse_tree = parse(SqlTokenizer::new(&"select a, b from people where a > 1"));
         // Query
         //   select
-        //     *
+        //     a
+        //     ,
+        //     b
         //  from
         //    people
+        //  where
+        //      a
+        //      >
+        //      1
 
         assert_eq!(parse_tree.token, None);
         assert_eq!(parse_tree.children[0].token.as_ref().unwrap().sql_type, SqlType::Select);
-        assert_eq!(parse_tree.children[0].children[0].token.as_ref().unwrap().sql_type, SqlType::Star);
+        assert_eq!(parse_tree.children[0].children[0].token.as_ref().unwrap().sql_type, SqlType::Literal);
+        assert_eq!(parse_tree.children[0].children[1].token.as_ref().unwrap().sql_type, SqlType::Separator);
+        assert_eq!(parse_tree.children[0].children[2].token.as_ref().unwrap().sql_type, SqlType::Literal);
+
         assert_eq!(parse_tree.children[1].token.as_ref().unwrap().sql_type, SqlType::From);
         assert_eq!(parse_tree.children[1].children[0].token.as_ref().unwrap().sql_type, SqlType::Literal);
+
+        assert_eq!(parse_tree.children[2].token.as_ref().unwrap().sql_type, SqlType::Where);
+        assert_eq!(parse_tree.children[2].children[0].token.as_ref().unwrap().sql_type, SqlType::Literal);
+        assert_eq!(parse_tree.children[2].children[1].token.as_ref().unwrap().sql_type, SqlType::GreaterThan);
+        assert_eq!(parse_tree.children[2].children[2].token.as_ref().unwrap().sql_type, SqlType::Int);
     }
 }
