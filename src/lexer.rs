@@ -46,7 +46,7 @@ pub enum SqlType {
     Text
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct Token {
     pub sql_type: SqlType,
     pub text: String

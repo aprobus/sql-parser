@@ -5,8 +5,16 @@ use std::collections::HashSet;
 
 use lexer::{Token, SqlTokenizer, SqlType};
 
+#[derive(PartialEq, Debug, Clone)]
+pub enum NodeType {
+    Query,
+    Expression,
+
+    Concrete(Token)
+}
+
 pub struct ParseTree {
-    pub token: Option<Token>,
+    pub node_type: NodeType,
     pub children: Vec<ParseTree>
 }
 
@@ -21,7 +29,7 @@ fn parse_select <T> (lexer: &mut Peekable<T>) -> ParseTree
     loop {
         let column_token = lexer.next();
 
-        children.push(ParseTree { token: column_token, children: vec![] });
+        children.push(ParseTree { node_type: NodeType::Concrete(column_token.unwrap()), children: vec![] });
 
         let has_additional = if let Some(ref next_token) = lexer.peek() {
             next_token.sql_type == SqlType::Separator
@@ -30,13 +38,14 @@ fn parse_select <T> (lexer: &mut Peekable<T>) -> ParseTree
         };
 
         if has_additional {
-            children.push(ParseTree { token: lexer.next(), children: vec![] });
+            let separator_token = lexer.next().unwrap();
+            children.push(ParseTree { node_type: NodeType::Concrete(separator_token), children: vec![] });
         } else {
             break;
         }
     }
 
-    ParseTree { token: select_token, children: children }
+    ParseTree { node_type: NodeType::Concrete(select_token.unwrap()), children: children }
 }
 
 fn parse_from <T> (lexer: &mut Peekable<T>) -> ParseTree
@@ -46,14 +55,18 @@ fn parse_from <T> (lexer: &mut Peekable<T>) -> ParseTree
         panic!("Expected from, received {}", from_token.as_ref().unwrap().text);
     }
 
-    let mut children = Vec::new();
-    let table_token = lexer.next();
-    if table_token.as_ref().unwrap().sql_type != SqlType::Literal {
-        panic!("Expected literal");
-    }
-    children.push(ParseTree { token: table_token, children: vec![] });
+    if let Some(table_token) = lexer.next() {
+        if table_token.sql_type != SqlType::Literal {
+            panic!("Expected literal");
+        }
 
-    ParseTree { token: from_token, children: children }
+        let mut children = Vec::new();
+        children.push(ParseTree { node_type: NodeType::Concrete(table_token), children: vec![] });
+
+        ParseTree { node_type: NodeType::Concrete(from_token.unwrap()), children: children }
+    } else {
+        panic!("Missing table");
+    }
 }
 
 fn parse_where <T> (lexer: &mut Peekable<T>) -> Option<ParseTree>
@@ -68,12 +81,12 @@ fn parse_where <T> (lexer: &mut Peekable<T>) -> Option<ParseTree>
 
     let where_token = lexer.next();
 
-    let left = ParseTree { token: lexer.next(), children: vec![] };
-    let condition = ParseTree { token: lexer.next(), children: vec![] };
-    let right = ParseTree { token: lexer.next(), children: vec![] };
+    let left = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
+    let condition = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
+    let right = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
     let mut children = vec![left, condition, right];
 
-    Some(ParseTree { token: where_token, children: children })
+    Some(ParseTree { node_type: NodeType::Concrete(where_token.unwrap()), children: children })
 }
 
 fn parse_query <T> (lexer: &mut Peekable<T>) -> ParseTree
@@ -87,7 +100,7 @@ fn parse_query <T> (lexer: &mut Peekable<T>) -> ParseTree
         children.push(where_tree);
     }
 
-    ParseTree { token: None, children: children }
+    ParseTree { node_type: NodeType::Query, children: children }
 }
 
 pub fn parse <T> (mut lexer: T) -> ParseTree
@@ -101,6 +114,18 @@ pub fn parse <T> (mut lexer: T) -> ParseTree
 mod tests {
     use super::*;
     use lexer::{Token, SqlTokenizer};
+
+    fn find_sql_type(tree: &ParseTree, child_indexes: &[usize]) -> SqlType {
+        let mut current_tree = tree;
+        for i in child_indexes {
+            current_tree = &current_tree.children[*i];
+        }
+
+        match current_tree.node_type {
+            NodeType::Concrete(ref token) => token.sql_type.clone(),
+            _ => panic!("Not a concrete type!")
+        }
+    }
 
     #[test]
     fn test_simple_query() {
@@ -117,18 +142,17 @@ mod tests {
         //      >
         //      1
 
-        assert_eq!(parse_tree.token, None);
-        assert_eq!(parse_tree.children[0].token.as_ref().unwrap().sql_type, SqlType::Select);
-        assert_eq!(parse_tree.children[0].children[0].token.as_ref().unwrap().sql_type, SqlType::Literal);
-        assert_eq!(parse_tree.children[0].children[1].token.as_ref().unwrap().sql_type, SqlType::Separator);
-        assert_eq!(parse_tree.children[0].children[2].token.as_ref().unwrap().sql_type, SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0]), SqlType::Select);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1]), SqlType::Separator);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 2]), SqlType::Literal);
 
-        assert_eq!(parse_tree.children[1].token.as_ref().unwrap().sql_type, SqlType::From);
-        assert_eq!(parse_tree.children[1].children[0].token.as_ref().unwrap().sql_type, SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[1]), SqlType::From);
+        assert_eq!(find_sql_type(&parse_tree, &[1, 0]), SqlType::Literal);
 
-        assert_eq!(parse_tree.children[2].token.as_ref().unwrap().sql_type, SqlType::Where);
-        assert_eq!(parse_tree.children[2].children[0].token.as_ref().unwrap().sql_type, SqlType::Literal);
-        assert_eq!(parse_tree.children[2].children[1].token.as_ref().unwrap().sql_type, SqlType::GreaterThan);
-        assert_eq!(parse_tree.children[2].children[2].token.as_ref().unwrap().sql_type, SqlType::Int);
+        assert_eq!(find_sql_type(&parse_tree, &[2]), SqlType::Where);
+        assert_eq!(find_sql_type(&parse_tree, &[2, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[2, 1]), SqlType::GreaterThan);
+        assert_eq!(find_sql_type(&parse_tree, &[2, 2]), SqlType::Int);
     }
 }
