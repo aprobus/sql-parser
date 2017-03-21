@@ -17,101 +17,139 @@ pub enum NodeType {
     Concrete(Token)
 }
 
+#[derive(Debug, Clone)]
+pub struct ParseErr {
+    pub invalid_token: Option<Token>,
+    pub sql_types: Vec<SqlType>
+}
+
+impl ParseErr {
+    fn new(token: Option<Token>, sql_type: SqlType) -> ParseErr {
+        ParseErr { invalid_token: token, sql_types: vec![sql_type] }
+    }
+
+    fn new_multi(token: Option<Token>, sql_types: Vec<SqlType>) -> ParseErr {
+        ParseErr { invalid_token: token, sql_types: sql_types }
+    }
+}
+
 pub struct ParseTree {
     pub node_type: NodeType,
     pub children: Vec<ParseTree>
 }
 
-fn parse_select <T> (lexer: &mut Peekable<T>) -> ParseTree
-    where T: Iterator<Item = Token> {
-    let select_token = lexer.next();
-    if select_token.as_ref().unwrap().sql_type != SqlType::Select {
-        panic!("Expected select");
+impl ParseTree {
+    fn new_leaf(token: Token) -> ParseTree {
+        ParseTree {
+            node_type: NodeType::Concrete(token),
+            children: vec![]
+        }
     }
+}
+
+fn peek_sql_type <T> (lexer: &mut Peekable<T>) -> Option<SqlType>
+    where T: Iterator<Item = Token> {
+    lexer.peek().as_ref().map(|token| token.sql_type.clone())
+}
+
+fn parse_token <T> (lexer: &mut Peekable<T>, sql_type: SqlType) -> Result<Token, ParseErr>
+    where T: Iterator<Item = Token> {
+    if let Some(token) = lexer.next() {
+        if token.sql_type == sql_type {
+            Ok(token)
+        } else {
+            Err(ParseErr::new(Some(token), sql_type))
+        }
+    } else {
+        Err(ParseErr::new(None, sql_type))
+    }
+}
+
+fn parse_any_token <T> (lexer: &mut Peekable<T>, sql_types: &Vec<SqlType>) -> Result<Token, ParseErr>
+    where T: Iterator<Item = Token> {
+    if let Some(token) = lexer.next() {
+        if sql_types.iter().any(|sql_type| &token.sql_type == sql_type) {
+            Ok(token)
+        } else {
+            Err(ParseErr::new_multi(Some(token), sql_types.clone()))
+        }
+    } else {
+        Err(ParseErr::new_multi(None, sql_types.clone()))
+    }
+}
+
+fn parse_optional_token <T> (lexer: &mut Peekable<T>, sql_type: SqlType) -> Option<Token>
+    where T: Iterator<Item = Token> {
+    if peek_sql_type(lexer) == Some(sql_type) {
+        Some(parse_token(lexer, sql_type).unwrap())
+    } else {
+        None
+    }
+}
+
+fn parse_select <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    where T: Iterator<Item = Token> {
+    let select_token = try!(parse_token(lexer, SqlType::Select));
 
     let mut children = Vec::new();
-    children.push(ParseTree { node_type: NodeType::Concrete(select_token.unwrap()), children: vec![] });
+    children.push(ParseTree::new_leaf(select_token));
     loop {
-        let column_token = lexer.next();
+        let column_token = try!(parse_token(lexer, SqlType::Literal));
+        children.push(ParseTree::new_leaf(column_token));
 
-        children.push(ParseTree { node_type: NodeType::Concrete(column_token.unwrap()), children: vec![] });
-
-        let has_additional = if let Some(ref next_token) = lexer.peek() {
-            next_token.sql_type == SqlType::Separator
-        } else {
-            false
-        };
-
-        if has_additional {
-            children.push(ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![]});
+        if let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
+            children.push(ParseTree::new_leaf(separator_token));
         } else {
             break;
         }
     }
 
-    ParseTree { node_type: NodeType::Selection, children: children }
+    Ok(ParseTree { node_type: NodeType::Selection, children: children })
 }
 
-fn parse_from <T> (lexer: &mut Peekable<T>) -> ParseTree
+fn parse_from <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
-    let from_token = lexer.next();
-    if from_token.as_ref().unwrap().sql_type != SqlType::From {
-        panic!("Expected from, received {}", from_token.as_ref().unwrap().text);
-    }
+    let from_token = try!(parse_token(lexer, SqlType::From));
+    let table_token = try!(parse_token(lexer, SqlType::Literal));
 
-    if let Some(table_token) = lexer.next() {
-        if table_token.sql_type != SqlType::Literal {
-            panic!("Expected literal");
-        }
+    let mut children = Vec::new();
+    children.push(ParseTree::new_leaf(from_token));
+    children.push(ParseTree::new_leaf(table_token));
 
-        let mut children = Vec::new();
-        children.push(ParseTree { node_type: NodeType::Concrete(from_token.unwrap()), children: vec![] });
-        children.push(ParseTree { node_type: NodeType::Concrete(table_token), children: vec![] });
-
-        ParseTree { node_type: NodeType::Source, children: children }
-    } else {
-        panic!("Missing table");
-    }
+    Ok(ParseTree { node_type: NodeType::Source, children: children })
 }
 
-fn parse_condition <T> (lexer: &mut Peekable<T>) -> ParseTree
+fn parse_condition <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
-    let left = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
-    let condition = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
-    let right = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
+    let farts = vec![SqlType::Literal, SqlType::Int, SqlType::Float];
+    let poops = vec![SqlType::GreaterThan, SqlType::GreaterThanEqual, SqlType::LessThan, SqlType::LessThanEqual, SqlType::Equal];
+
+    let left = ParseTree::new_leaf(try!(parse_any_token(lexer, &farts)));
+    let condition = ParseTree::new_leaf(try!(parse_any_token(lexer, &poops)));
+    let right = ParseTree::new_leaf(try!(parse_any_token(lexer, &farts)));
     let mut children = vec![left, condition, right];
 
-    ParseTree { node_type: NodeType::Condition, children: children }
+    Ok(ParseTree { node_type: NodeType::Condition, children: children })
 }
 
-fn peek_sql_type <T> (lexer: &mut Peekable<T>) -> Option<SqlType>
-    where T: Iterator<Item = Token> {
-        lexer.peek().as_ref().map(|token| token.sql_type.clone())
-}
-
-fn parse_expr <T> (lexer: &mut Peekable<T>) -> ParseTree
+fn parse_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
     let mut children = vec![];
 
-    let next_sql_type = peek_sql_type(lexer);
-    if let Some(sql_type) = next_sql_type {
-        match sql_type {
-            SqlType::OpenParen => {
-                children.push(ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] });
-                children.push(parse_expr(lexer));
-                children.push(ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] });
-            },
-            SqlType::Literal => {
-                children.push(parse_condition(lexer));
-            },
-            _ => {
-                panic!("Unknown type");
-            }
+    match peek_sql_type(lexer) {
+        Some(SqlType::OpenParen) => {
+            children.push(ParseTree::new_leaf(try!(parse_token(lexer, SqlType::OpenParen))));
+            children.push(try!(parse_expr(lexer)));
+            children.push(ParseTree::new_leaf(try!(parse_token(lexer, SqlType::CloseParen))));
+        },
+        Some(SqlType::Literal) => {
+            children.push(try!(parse_condition(lexer)));
+        },
+        _ => {
+            return Err(ParseErr::new(lexer.next(), SqlType::Literal));
         }
-    } else {
-        panic!("No more tokens!");
     }
 
     let expression_tree = ParseTree { node_type: NodeType::Expression, children: children };
@@ -123,61 +161,61 @@ fn parse_expr <T> (lexer: &mut Peekable<T>) -> ParseTree
                 let mut expr_children = vec![
                     expression_tree,
                     ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] },
-                    parse_expr(lexer)
+                    try!(parse_expr(lexer))
                 ];
-                ParseTree { node_type: NodeType::Expression, children: expr_children }
+                Ok(ParseTree { node_type: NodeType::Expression, children: expr_children })
             },
-            _ => expression_tree
+            _ => Ok(expression_tree)
         }
     } else {
-        expression_tree
+        Ok(expression_tree)
     }
 }
 
-fn parse_where <T> (lexer: &mut Peekable<T>) -> Option<ParseTree>
+fn parse_where <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
-    if let Some(where_token) = lexer.peek().as_ref() {
-        if where_token.sql_type != SqlType::Where {
-            return None;
-        }
-    } else {
-        return None;
-    }
-
-    let where_token = lexer.next();
-
-    //let left = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
-    //let condition = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
-    //let right = ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] };
-    //let mut children = vec![left, condition, right];
+    let where_token = try!(parse_token(lexer, SqlType::Where));
+    let expr_tree = try!(parse_expr(lexer));
 
     let children = vec![
-        ParseTree { node_type: NodeType::Concrete(where_token.unwrap()), children: vec![] },
-        parse_expr(lexer)
+        ParseTree::new_leaf(where_token),
+        expr_tree
     ];
 
-    Some(ParseTree { node_type: NodeType::Filter, children: children})
+    Ok(ParseTree { node_type: NodeType::Filter, children: children})
 }
 
-fn parse_query <T> (lexer: &mut Peekable<T>) -> ParseTree
+fn try_parse_where <T> (lexer: &mut Peekable<T>) -> Option<Result<ParseTree, ParseErr>>
+    where T: Iterator<Item = Token> {
+    if peek_sql_type(lexer) == Some(SqlType::Where) {
+        Some(parse_where(lexer))
+    } else {
+        None
+    }
+}
+
+fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
     let mut children = Vec::new();
 
-    children.push(parse_select(lexer));
-    children.push(parse_from(lexer));
+    children.push(try!(parse_select(lexer)));
+    children.push(try!(parse_from(lexer)));
 
-    if let Some(where_tree) = parse_where(lexer) {
-        children.push(where_tree);
+    if let Some(where_result) = try_parse_where(lexer) {
+        if let Ok(where_tree) = where_result {
+            children.push(where_tree);
+        } else {
+            return where_result;
+        }
     }
 
-    ParseTree { node_type: NodeType::Query, children: children }
+    Ok(ParseTree { node_type: NodeType::Query, children: children })
 }
 
-pub fn parse <T> (mut lexer: T) -> ParseTree
+pub fn parse <T> (mut lexer: T) -> Result<ParseTree, ParseErr>
   where T: Iterator<Item = Token> {
     let mut peekable_lexer = Box::new(lexer.peekable());
     parse_query(&mut peekable_lexer)
-    //ParseTree { token: None, children: vec![] }
 }
 
 #[cfg(test)]
@@ -208,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_simple_query() {
-        let parse_tree = parse(SqlTokenizer::new(&"select a, b from people where a > 1 and a < 10"));
+        let parse_tree = parse(SqlTokenizer::new(&"select a, b from people where a > 1 and a < 10")).unwrap();
         // Query
         //   selection
         //     select
@@ -249,5 +287,11 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 0]), SqlType::Literal);
         assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 1]), SqlType::LessThan);
         assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 2]), SqlType::Int);
+    }
+
+    #[test]
+    fn test_simple_error() {
+        let parse_tree = parse(SqlTokenizer::new(&"select a b from people"));
+        assert!(parse_tree.is_err());
     }
 }

@@ -3,7 +3,7 @@ use std::iter::Iterator;
 use std::iter::Peekable;
 use std::collections::HashSet;
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum SqlType {
     Select,
     Star,
