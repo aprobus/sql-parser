@@ -13,6 +13,7 @@ pub enum NodeType {
     Filter,
     Expression,
     Condition,
+    Limit,
 
     Concrete(Token)
 }
@@ -185,13 +186,30 @@ fn parse_where <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     Ok(ParseTree { node_type: NodeType::Filter, children: children})
 }
 
-fn try_parse_where <T> (lexer: &mut Peekable<T>) -> Option<Result<ParseTree, ParseErr>>
+fn parse_limit <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
-    if peek_sql_type(lexer) == Some(SqlType::Where) {
-        Some(parse_where(lexer))
-    } else {
-        None
-    }
+    let limit_token = try!(parse_token(lexer, SqlType::Limit));
+    let int_token = try!(parse_token(lexer, SqlType::Int));
+
+    let children = vec![
+        ParseTree::new_leaf(limit_token),
+        ParseTree::new_leaf(int_token),
+    ];
+
+    Ok(ParseTree { node_type: NodeType::Limit, children: children})
+}
+
+fn parse_offset <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    where T: Iterator<Item = Token> {
+    let offset_token = try!(parse_token(lexer, SqlType::Offset));
+    let int_token = try!(parse_token(lexer, SqlType::Int));
+
+    let children = vec![
+        ParseTree::new_leaf(offset_token),
+        ParseTree::new_leaf(int_token),
+    ];
+
+    Ok(ParseTree { node_type: NodeType::Limit, children: children})
 }
 
 fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
@@ -201,12 +219,16 @@ fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     children.push(try!(parse_select(lexer)));
     children.push(try!(parse_from(lexer)));
 
-    if let Some(where_result) = try_parse_where(lexer) {
-        if let Ok(where_tree) = where_result {
-            children.push(where_tree);
-        } else {
-            return where_result;
-        }
+    if peek_sql_type(lexer) == Some(SqlType::Where) {
+        children.push(try!(parse_where(lexer)));
+    }
+
+    if peek_sql_type(lexer) == Some(SqlType::Limit) {
+        children.push(try!(parse_limit(lexer)));
+    }
+
+    if peek_sql_type(lexer) == Some(SqlType::Offset) {
+        children.push(try!(parse_offset(lexer)));
     }
 
     Ok(ParseTree { node_type: NodeType::Query, children: children })
@@ -246,7 +268,7 @@ mod tests {
 
     #[test]
     fn test_simple_query() {
-        let parse_tree = parse(SqlTokenizer::new(&"select a, b from people where a > 1 and a < 10")).unwrap();
+        let parse_tree = parse(SqlTokenizer::new(&"select a, b from people where a > 1 and a < 10 limit 2 offset 1")).unwrap();
         // Query
         //   selection
         //     select
@@ -270,6 +292,12 @@ mod tests {
         //          a
         //          <
         //          10
+        //  limitation
+        //    limit
+        //    2
+        //  offset
+        //    offset
+        //    1
 
         assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
         assert_eq!(find_sql_type(&parse_tree, &[0, 1]), SqlType::Literal);
@@ -287,6 +315,12 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 0]), SqlType::Literal);
         assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 1]), SqlType::LessThan);
         assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 2]), SqlType::Int);
+
+        assert_eq!(find_sql_type(&parse_tree, &[3, 0]), SqlType::Limit);
+        assert_eq!(find_sql_type(&parse_tree, &[3, 1]), SqlType::Int);
+
+        assert_eq!(find_sql_type(&parse_tree, &[4, 0]), SqlType::Offset);
+        assert_eq!(find_sql_type(&parse_tree, &[4, 1]), SqlType::Int);
     }
 
     #[test]
