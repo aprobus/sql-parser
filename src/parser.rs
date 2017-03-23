@@ -14,6 +14,7 @@ pub enum NodeType {
     Expression,
     Condition,
     Limit,
+    FieldSelection,
 
     Concrete(Token)
 }
@@ -88,22 +89,48 @@ fn parse_optional_token <T> (lexer: &mut Peekable<T>, sql_type: SqlType) -> Opti
     }
 }
 
+fn parse_field_selection <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    where T: Iterator<Item = Token> {
+
+    let mut children = vec![];
+    let farts = vec![SqlType::Literal, SqlType::Star];
+
+    let token = try!(parse_any_token(lexer, &farts));
+    match token.sql_type {
+        SqlType::Literal => {
+            children.push(ParseTree::new_leaf(token));
+
+            if let Some(paren_token) = parse_optional_token(lexer, SqlType::OpenParen) {
+                children.push(ParseTree::new_leaf(paren_token));
+                children.push(try!(parse_field_selection(lexer)));
+
+                let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
+                children.push(ParseTree::new_leaf(close_paren_token));
+            }
+        },
+        SqlType::Star => {
+            children.push(ParseTree::new_leaf(token));
+        },
+        _ => {
+            return Err(ParseErr::new_multi(Some(token), vec![SqlType::Literal, SqlType::Star]))
+        }
+    }
+
+    if let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
+        children.push(ParseTree::new_leaf(separator_token));
+        children.push(try!(parse_field_selection(lexer)));
+    }
+
+    Ok(ParseTree { node_type: NodeType::FieldSelection, children: children })
+}
+
 fn parse_select <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
     let select_token = try!(parse_token(lexer, SqlType::Select));
 
     let mut children = Vec::new();
     children.push(ParseTree::new_leaf(select_token));
-    loop {
-        let column_token = try!(parse_token(lexer, SqlType::Literal));
-        children.push(ParseTree::new_leaf(column_token));
-
-        if let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
-            children.push(ParseTree::new_leaf(separator_token));
-        } else {
-            break;
-        }
-    }
+    children.push(try!(parse_field_selection(lexer)));
 
     Ok(ParseTree { node_type: NodeType::Selection, children: children })
 }
@@ -124,10 +151,10 @@ fn parse_condition <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
     let farts = vec![SqlType::Literal, SqlType::Int, SqlType::Float];
-    let poops = vec![SqlType::GreaterThan, SqlType::GreaterThanEqual, SqlType::LessThan, SqlType::LessThanEqual, SqlType::Equal];
+    let assertion_types = vec![SqlType::GreaterThan, SqlType::GreaterThanEqual, SqlType::LessThan, SqlType::LessThanEqual, SqlType::Equal];
 
     let left = ParseTree::new_leaf(try!(parse_any_token(lexer, &farts)));
-    let condition = ParseTree::new_leaf(try!(parse_any_token(lexer, &poops)));
+    let condition = ParseTree::new_leaf(try!(parse_any_token(lexer, &assertion_types)));
     let right = ParseTree::new_leaf(try!(parse_any_token(lexer, &farts)));
     let mut children = vec![left, condition, right];
 
@@ -269,40 +296,42 @@ mod tests {
     #[test]
     fn test_simple_query() {
         let parse_tree = parse(SqlTokenizer::new(&"select a, b from people where a > 1 and a < 10 limit 2 offset 1")).unwrap();
-        // Query
-        //   selection
-        //     select
-        //     a
-        //     ,
-        //     b
-        //  source
-        //    from
-        //    people
-        //  filter
-        //    where
-        //    expr
-        //      expr
-        //        cond
-        //          a
-        //          >
-        //          1
-        //      and
-        //      expr
-        //        cond
-        //          a
-        //          <
-        //          10
-        //  limitation
-        //    limit
-        //    2
-        //  offset
-        //    offset
-        //    1
+        // 0 query
+        //   0 selection
+        //     0 select
+        //     1 field
+        //       0 a
+        //       1 ,
+        //       2 field
+        //         0 b
+        //  1 source
+        //    0 from
+        //    1 people
+        //  2 filter
+        //    0 where
+        //    1 expr
+        //      0 expr
+        //        0 cond
+        //          0 a
+        //          1 >
+        //          2 1
+        //      1 and
+        //      2 expr
+        //        0 cond
+        //          0 a
+        //          1 <
+        //          2 10
+        //  3 limitation
+        //    0 limit
+        //    1 2
+        //  4 offset
+        //    0 offset
+        //    1 1
 
         assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 2]), SqlType::Separator);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 1]), SqlType::Separator);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 0]), SqlType::Literal);
 
         assert_eq!(find_sql_type(&parse_tree, &[1, 0]), SqlType::From);
         assert_eq!(find_sql_type(&parse_tree, &[1, 1]), SqlType::Literal);
@@ -321,6 +350,34 @@ mod tests {
 
         assert_eq!(find_sql_type(&parse_tree, &[4, 0]), SqlType::Offset);
         assert_eq!(find_sql_type(&parse_tree, &[4, 1]), SqlType::Int);
+    }
+
+    #[test]
+    fn test_select_function() {
+        let parse_tree = parse(SqlTokenizer::new(&"select age, count(*) from people")).unwrap();
+        // 0 query
+        //   0 selection
+        //     0 select
+        //     1 field
+        //       0 a
+        //       1 ,
+        //       2 field
+        //         0 count
+        //         1 (
+        //         2 field
+        //           0 *
+        //         3 )
+        //  1 source
+        //    0 from
+        //    1 people
+
+        assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 1]), SqlType::Separator);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 1]), SqlType::OpenParen);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 2, 0]), SqlType::Star);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 3]), SqlType::CloseParen);
     }
 
     #[test]
