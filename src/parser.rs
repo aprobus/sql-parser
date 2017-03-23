@@ -93,9 +93,9 @@ fn parse_field_selection <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, Pars
     where T: Iterator<Item = Token> {
 
     let mut children = vec![];
-    let farts = vec![SqlType::Literal, SqlType::Star];
+    let field_types = vec![SqlType::Literal, SqlType::Star];
 
-    let token = try!(parse_any_token(lexer, &farts));
+    let token = try!(parse_any_token(lexer, &field_types));
     match token.sql_type {
         SqlType::Literal => {
             children.push(ParseTree::new_leaf(token));
@@ -150,12 +150,12 @@ fn parse_from <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 fn parse_condition <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
-    let farts = vec![SqlType::Literal, SqlType::Int, SqlType::Float];
+    let var_types = vec![SqlType::Literal, SqlType::Int, SqlType::Float];
     let assertion_types = vec![SqlType::GreaterThan, SqlType::GreaterThanEqual, SqlType::LessThan, SqlType::LessThanEqual, SqlType::Equal];
 
-    let left = ParseTree::new_leaf(try!(parse_any_token(lexer, &farts)));
+    let left = ParseTree::new_leaf(try!(parse_any_token(lexer, &var_types)));
     let condition = ParseTree::new_leaf(try!(parse_any_token(lexer, &assertion_types)));
-    let right = ParseTree::new_leaf(try!(parse_any_token(lexer, &farts)));
+    let right = ParseTree::new_leaf(try!(parse_any_token(lexer, &var_types)));
     let mut children = vec![left, condition, right];
 
     Ok(ParseTree { node_type: NodeType::Condition, children: children })
