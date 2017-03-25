@@ -133,11 +133,6 @@ fn parse_field_selection <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, Pars
         children.push(ParseTree::new_leaf(literal_token));
     }
 
-    if let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
-        children.push(ParseTree::new_leaf(separator_token));
-        children.push(try!(parse_field_selection(lexer)));
-    }
-
     Ok(ParseTree { node_type: NodeType::FieldSelection, children: children })
 }
 
@@ -148,6 +143,12 @@ fn parse_select <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     let mut children = Vec::new();
     children.push(ParseTree::new_leaf(select_token));
     children.push(try!(parse_field_selection(lexer)));
+
+    while peek_sql_type(lexer) == Some(SqlType::Separator) {
+        let sep_token = try!(parse_token(lexer, SqlType::Separator));
+        children.push(ParseTree::new_leaf(sep_token));
+        children.push(try!(parse_field_selection(lexer)));
+    }
 
     Ok(ParseTree { node_type: NodeType::Selection, children: children })
 }
@@ -402,9 +403,11 @@ mod tests {
         //   0 selection
         //     0 select
         //     1 field
-        //       0 a
-        //       1 ,
-        //       2 field
+        //       0 field
+        //         0 a
+        //     2 ,
+        //     3 field
+        //       0 field
         //         0 b
         //  1 source
         //    0 from
@@ -432,8 +435,8 @@ mod tests {
 
         assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
         assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 1]), SqlType::Separator);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 2]), SqlType::Separator);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 0]), SqlType::Literal);
 
         assert_eq!(find_sql_type(&parse_tree, &[1, 0]), SqlType::From);
         assert_eq!(find_sql_type(&parse_tree, &[1, 1]), SqlType::Literal);
@@ -463,17 +466,17 @@ mod tests {
         //     1 field
         //       0 field
         //         0 a
-        //       1 ,
-        //       2 field
-        //         0 field
-        //           0 count
-        //           1 (
-        //           2 field
-        //             0 field
-        //               0 *
-        //           3 )
-        //         1 as
-        //         2 num_people
+        //     2 ,
+        //     3 field
+        //       0 field
+        //         0 count
+        //         1 (
+        //         2 field
+        //           0 field
+        //             0 *
+        //         3 )
+        //       1 as
+        //       2 num_people
         //  1 source
         //    0 from
         //    1 people
@@ -493,13 +496,13 @@ mod tests {
 
         assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
         assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 1]), SqlType::Separator);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 0, 1]), SqlType::OpenParen);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 0, 2, 0, 0]), SqlType::Star);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 0, 3]), SqlType::CloseParen);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 1]), SqlType::As);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 2]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 2]), SqlType::Separator);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 1]), SqlType::OpenParen);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 2, 0, 0]), SqlType::Star);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 3]), SqlType::CloseParen);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 1]), SqlType::As);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 2]), SqlType::Literal);
 
         assert_eq!(find_sql_type(&parse_tree, &[1, 0]), SqlType::From);
         assert_eq!(find_sql_type(&parse_tree, &[1, 1]), SqlType::Literal);
