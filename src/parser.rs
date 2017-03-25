@@ -345,20 +345,20 @@ fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
         children.push(try!(parse_where(lexer)));
     }
 
-    if peek_sql_type(lexer) == Some(SqlType::Limit) {
-        children.push(try!(parse_limit(lexer)));
-    }
-
-    if peek_sql_type(lexer) == Some(SqlType::Offset) {
-        children.push(try!(parse_offset(lexer)));
-    }
-
     if peek_sql_type(lexer) == Some(SqlType::Group) {
         children.push(try!(parse_grouping(lexer)));
 
         if peek_sql_type(lexer) == Some(SqlType::Having) {
             children.push(try!(parse_having(lexer)));
         }
+    }
+
+    if peek_sql_type(lexer) == Some(SqlType::Limit) {
+        children.push(try!(parse_limit(lexer)));
+    }
+
+    if peek_sql_type(lexer) == Some(SqlType::Offset) {
+        children.push(try!(parse_offset(lexer)));
     }
 
     Ok(ParseTree { node_type: NodeType::Query, children: children })
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_simple_query() {
-        let parse_tree = parse(SqlTokenizer::new(&"select a, b from people where a > 1 and a < 10 limit 2 offset 1")).unwrap();
+        let parse_tree = parse(SqlTokenizer::new(&"select a, b from people where a > 1 and a < 10")).unwrap();
         // 0 query
         //   0 selection
         //     0 select
@@ -426,12 +426,6 @@ mod tests {
         //          0 a
         //          1 <
         //          2 10
-        //  3 limitation
-        //    0 limit
-        //    1 2
-        //  4 offset
-        //    0 offset
-        //    1 1
 
         assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
         assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0, 0]), SqlType::Literal);
@@ -450,16 +444,11 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 1]), SqlType::LessThan);
         assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 2]), SqlType::Int);
 
-        assert_eq!(find_sql_type(&parse_tree, &[3, 0]), SqlType::Limit);
-        assert_eq!(find_sql_type(&parse_tree, &[3, 1]), SqlType::Int);
-
-        assert_eq!(find_sql_type(&parse_tree, &[4, 0]), SqlType::Offset);
-        assert_eq!(find_sql_type(&parse_tree, &[4, 1]), SqlType::Int);
     }
 
     #[test]
     fn test_select_function() {
-        let parse_tree = parse(SqlTokenizer::new(&"select age, count(*) as num_people from people group by age having count(*) > 3")).unwrap();
+        let parse_tree = parse(SqlTokenizer::new(&"select age, count(*) as num_people from people group by age having count(*) > 3 limit 1 offset 2")).unwrap();
         // 0 query
         //   0 selection
         //     0 select
@@ -493,6 +482,12 @@ mod tests {
         //      3 )
         //      4 >
         //      5 3
+        //  4 limitation
+        //    0 limit
+        //    1 2
+        //  5 offset
+        //    0 offset
+        //    1 1
 
         assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
         assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0, 0]), SqlType::Literal);
@@ -518,6 +513,12 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree, &[3, 1, 3]), SqlType::CloseParen);
         assert_eq!(find_sql_type(&parse_tree, &[3, 1, 4]), SqlType::GreaterThan);
         assert_eq!(find_sql_type(&parse_tree, &[3, 1, 5]), SqlType::Int);
+
+        assert_eq!(find_sql_type(&parse_tree, &[4, 0]), SqlType::Limit);
+        assert_eq!(find_sql_type(&parse_tree, &[4, 1]), SqlType::Int);
+
+        assert_eq!(find_sql_type(&parse_tree, &[5, 0]), SqlType::Offset);
+        assert_eq!(find_sql_type(&parse_tree, &[5, 1]), SqlType::Int);
     }
 
     #[test]
