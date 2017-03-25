@@ -15,6 +15,7 @@ pub enum NodeType {
     Condition,
     Limit,
     FieldSelection,
+    Grouping,
 
     Concrete(Token)
 }
@@ -239,6 +240,32 @@ fn parse_offset <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     Ok(ParseTree { node_type: NodeType::Limit, children: children})
 }
 
+fn parse_group_field <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    where T: Iterator<Item = Token> {
+    let field_token = try!(parse_token(lexer, SqlType::Literal));
+
+    if let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
+        let mut children = vec![ParseTree::new_leaf(field_token), ParseTree::new_leaf(separator_token), try!(parse_group_field(lexer))];
+        Ok(ParseTree { node_type: NodeType::Grouping, children: children })
+    } else {
+        Ok(ParseTree::new_leaf(field_token))
+    }
+}
+
+fn parse_grouping <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    where T: Iterator<Item = Token> {
+    let group_token = try!(parse_token(lexer, SqlType::Group));
+    let by_token = try!(parse_token(lexer, SqlType::By));
+
+    let children = vec![
+        ParseTree::new_leaf(group_token),
+        ParseTree::new_leaf(by_token),
+        try!(parse_group_field(lexer))
+    ];
+
+    Ok(ParseTree { node_type: NodeType::Limit, children: children})
+}
+
 fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
     let mut children = Vec::new();
@@ -256,6 +283,10 @@ fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 
     if peek_sql_type(lexer) == Some(SqlType::Offset) {
         children.push(try!(parse_offset(lexer)));
+    }
+
+    if peek_sql_type(lexer) == Some(SqlType::Group) {
+        children.push(try!(parse_grouping(lexer)));
     }
 
     Ok(ParseTree { node_type: NodeType::Query, children: children })
@@ -354,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_select_function() {
-        let parse_tree = parse(SqlTokenizer::new(&"select age, count(*) from people")).unwrap();
+        let parse_tree = parse(SqlTokenizer::new(&"select age, count(*) from people group by age")).unwrap();
         // 0 query
         //   0 selection
         //     0 select
@@ -370,6 +401,10 @@ mod tests {
         //  1 source
         //    0 from
         //    1 people
+        //  2 grouping
+        //    0 group
+        //    1 by
+        //    2 age
 
         assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
         assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0]), SqlType::Literal);
@@ -378,6 +413,13 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 1]), SqlType::OpenParen);
         assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 2, 0]), SqlType::Star);
         assert_eq!(find_sql_type(&parse_tree, &[0, 1, 2, 3]), SqlType::CloseParen);
+
+        assert_eq!(find_sql_type(&parse_tree, &[1, 0]), SqlType::From);
+        assert_eq!(find_sql_type(&parse_tree, &[1, 1]), SqlType::Literal);
+
+        assert_eq!(find_sql_type(&parse_tree, &[2, 0]), SqlType::Group);
+        assert_eq!(find_sql_type(&parse_tree, &[2, 1]), SqlType::By);
+        assert_eq!(find_sql_type(&parse_tree, &[2, 2]), SqlType::Literal);
     }
 
     #[test]
