@@ -17,6 +17,7 @@ pub enum NodeType {
     FieldSelection,
     Grouping,
     Having,
+    Sort,
 
     Concrete(Token)
 }
@@ -370,6 +371,42 @@ fn parse_having <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     Ok(ParseTree { node_type: NodeType::Having, children: children})
 }
 
+fn parse_order_field <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    where T: Iterator<Item = Token> {
+    let field_token = try!(parse_token(lexer, SqlType::Literal));
+
+    let mut children = vec![
+        ParseTree::new_leaf(field_token)
+    ];
+
+    if let Some(asc_token) = parse_optional_token(lexer, SqlType::Asc) {
+        children.push(ParseTree::new_leaf(asc_token));
+    } else if let Some(desc_token) = parse_optional_token(lexer, SqlType::Desc) {
+        children.push(ParseTree::new_leaf(desc_token));
+    }
+
+    Ok(ParseTree { node_type: NodeType::Sort, children: children})
+}
+
+fn parse_order <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    where T: Iterator<Item = Token> {
+    let order_token = try!(parse_token(lexer, SqlType::Order));
+    let by_token = try!(parse_token(lexer, SqlType::By));
+
+    let mut children = vec![
+        ParseTree::new_leaf(order_token),
+        ParseTree::new_leaf(by_token),
+        try!(parse_order_field(lexer))
+    ];
+
+    while let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
+        children.push(ParseTree::new_leaf(separator_token));
+        children.push(try!(parse_order_field(lexer)));
+    }
+
+    Ok(ParseTree { node_type: NodeType::Sort, children: children})
+}
+
 fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
     let mut children = Vec::new();
@@ -387,6 +424,10 @@ fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
         if peek_sql_type(lexer) == Some(SqlType::Having) {
             children.push(try!(parse_having(lexer)));
         }
+    }
+
+    if peek_sql_type(lexer) == Some(SqlType::Order) {
+        children.push(try!(parse_order(lexer)));
     }
 
     if peek_sql_type(lexer) == Some(SqlType::Limit) {
@@ -484,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_select_function() {
-        let parse_tree = parse(SqlTokenizer::new(&"select age, count(*) as num_people from people group by age having count(*) > 3 limit 1 offset 2")).unwrap();
+        let parse_tree = parse(SqlTokenizer::new(&"select age, count(*) as num_people from people group by age having count(*) > 3 order by age desc limit 1 offset 2")).unwrap();
         // 0 query
         //   0 selection
         //     0 select
@@ -516,10 +557,15 @@ mod tests {
         //      3 )
         //      4 >
         //      5 3
-        //  4 limitation
+        //  4 sort
+        //    0 order
+        //    1 by
+        //    2 sort
+        //      0 age
+        //  5 limitation
         //    0 limit
         //    1 2
-        //  5 offset
+        //  6 offset
         //    0 offset
         //    1 1
 
@@ -548,11 +594,15 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree, &[3, 1, 4]), SqlType::GreaterThan);
         assert_eq!(find_sql_type(&parse_tree, &[3, 1, 5]), SqlType::Int);
 
-        assert_eq!(find_sql_type(&parse_tree, &[4, 0]), SqlType::Limit);
-        assert_eq!(find_sql_type(&parse_tree, &[4, 1]), SqlType::Int);
+        assert_eq!(find_sql_type(&parse_tree, &[4, 0]), SqlType::Order);
+        assert_eq!(find_sql_type(&parse_tree, &[4, 1]), SqlType::By);
+        assert_eq!(find_sql_type(&parse_tree, &[4, 2, 0]), SqlType::Literal);
 
-        assert_eq!(find_sql_type(&parse_tree, &[5, 0]), SqlType::Offset);
+        assert_eq!(find_sql_type(&parse_tree, &[5, 0]), SqlType::Limit);
         assert_eq!(find_sql_type(&parse_tree, &[5, 1]), SqlType::Int);
+
+        assert_eq!(find_sql_type(&parse_tree, &[6, 0]), SqlType::Offset);
+        assert_eq!(find_sql_type(&parse_tree, &[6, 1]), SqlType::Int);
     }
 
     #[test]
