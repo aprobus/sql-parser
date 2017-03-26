@@ -14,6 +14,7 @@ pub enum NodeType {
     Expression,
     Condition,
     Limit,
+    Offset,
     FieldSelection,
     Grouping,
     Having,
@@ -293,7 +294,7 @@ fn parse_offset <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
         ParseTree::new_leaf(int_token),
     ];
 
-    Ok(ParseTree { node_type: NodeType::Limit, children: children})
+    Ok(ParseTree { node_type: NodeType::Offset, children: children})
 }
 
 fn parse_group_field <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
@@ -506,23 +507,35 @@ mod tests {
         //          1 <
         //          2 10
 
-        assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 2]), SqlType::Separator);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 0]), SqlType::Literal);
+        assert_eq!(find_node_type(&parse_tree, &[]), NodeType::Query);
 
-        assert_eq!(find_sql_type(&parse_tree, &[1, 0]), SqlType::From);
-        assert_eq!(find_sql_type(&parse_tree, &[1, 1]), SqlType::Literal);
+        assert_eq!(find_node_type(&parse_tree, &[0]), NodeType::Selection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 0]), SqlType::Select);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1]), NodeType::FieldSelection);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0]), NodeType::FieldSelection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 2]), SqlType::Separator);
+        assert_eq!(find_node_type(&parse_tree, &[0, 3]), NodeType::FieldSelection);
+        assert_eq!(find_node_type(&parse_tree, &[0, 3, 0]), NodeType::FieldSelection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 0]), SqlType::Literal);
 
-        assert_eq!(find_sql_type(&parse_tree, &[2, 0]), SqlType::Where);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 1, 0, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 1, 0, 0, 1]), SqlType::GreaterThan);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 1, 0, 0, 2]), SqlType::Int);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 1, 1]), SqlType::And);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 1]), SqlType::LessThan);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 1, 2, 0, 2]), SqlType::Int);
+        assert_eq!(find_node_type(&parse_tree, &[1]), NodeType::Source);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 0]), SqlType::From);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1]), SqlType::Literal);
 
+        assert_eq!(find_node_type(&parse_tree, &[2]), NodeType::Filter);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 0]), SqlType::Where);
+        assert_eq!(find_node_type(&parse_tree, &[2, 1]), NodeType::Expression);
+        assert_eq!(find_node_type(&parse_tree, &[2, 1, 0]), NodeType::Expression);
+        assert_eq!(find_node_type(&parse_tree, &[2, 1, 0, 0]), NodeType::Condition);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 0, 1]), SqlType::GreaterThan);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 0, 2]), SqlType::Int);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 1]), SqlType::And);
+        assert_eq!(find_node_type(&parse_tree, &[2, 1, 2, 0]), NodeType::Condition);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 0, 1]), SqlType::LessThan);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 0, 2]), SqlType::Int);
     }
 
     #[test]
@@ -571,40 +584,51 @@ mod tests {
         //    0 offset
         //    1 1
 
-        assert_eq!(find_sql_type(&parse_tree, &[0, 0]), SqlType::Select);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 1, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 2]), SqlType::Separator);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 1]), SqlType::OpenParen);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 2]), SqlType::Star);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 3]), SqlType::CloseParen);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 1]), SqlType::As);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 2]), SqlType::Literal);
+        assert_eq!(find_node_type(&parse_tree, &[]), NodeType::Query);
 
-        assert_eq!(find_sql_type(&parse_tree, &[1, 0]), SqlType::From);
-        assert_eq!(find_sql_type(&parse_tree, &[1, 1]), SqlType::Literal);
+        assert_eq!(find_node_type(&parse_tree, &[0]), NodeType::Selection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 0]), SqlType::Select);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0]), NodeType::FieldSelection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 2]), SqlType::Separator);
+        assert_eq!(find_node_type(&parse_tree, &[0, 3, 0]), NodeType::FieldSelection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 1]), SqlType::OpenParen);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 2]), SqlType::Star);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 3]), SqlType::CloseParen);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 1]), SqlType::As);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 2]), SqlType::Literal);
 
-        assert_eq!(find_sql_type(&parse_tree, &[2, 0]), SqlType::Group);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 1]), SqlType::By);
-        assert_eq!(find_sql_type(&parse_tree, &[2, 2]), SqlType::Literal);
+        assert_eq!(find_node_type(&parse_tree, &[1]), NodeType::Source);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 0]), SqlType::From);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1]), SqlType::Literal);
 
-        assert_eq!(find_sql_type(&parse_tree, &[3, 0]), SqlType::Having);
-        assert_eq!(find_sql_type(&parse_tree, &[3, 1, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree, &[3, 1, 1]), SqlType::OpenParen);
-        assert_eq!(find_sql_type(&parse_tree, &[3, 1, 2]), SqlType::Star);
-        assert_eq!(find_sql_type(&parse_tree, &[3, 1, 3]), SqlType::CloseParen);
-        assert_eq!(find_sql_type(&parse_tree, &[3, 1, 4]), SqlType::GreaterThan);
-        assert_eq!(find_sql_type(&parse_tree, &[3, 1, 5]), SqlType::Int);
+        assert_eq!(find_node_type(&parse_tree, &[2]), NodeType::Grouping);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 0]), SqlType::Group);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1]), SqlType::By);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 2]), SqlType::Literal);
 
-        assert_eq!(find_sql_type(&parse_tree, &[4, 0]), SqlType::Order);
-        assert_eq!(find_sql_type(&parse_tree, &[4, 1]), SqlType::By);
-        assert_eq!(find_sql_type(&parse_tree, &[4, 2, 0]), SqlType::Literal);
+        assert_eq!(find_node_type(&parse_tree, &[3]), NodeType::Having);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 0]), SqlType::Having);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 1]), SqlType::OpenParen);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 2]), SqlType::Star);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 3]), SqlType::CloseParen);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 4]), SqlType::GreaterThan);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 5]), SqlType::Int);
 
-        assert_eq!(find_sql_type(&parse_tree, &[5, 0]), SqlType::Limit);
-        assert_eq!(find_sql_type(&parse_tree, &[5, 1]), SqlType::Int);
+        assert_eq!(find_node_type(&parse_tree, &[4]), NodeType::Sort);
+        assert_eq!(find_sql_type(&parse_tree,  &[4, 0]), SqlType::Order);
+        assert_eq!(find_sql_type(&parse_tree,  &[4, 1]), SqlType::By);
+        assert_eq!(find_sql_type(&parse_tree,  &[4, 2, 0]), SqlType::Literal);
 
-        assert_eq!(find_sql_type(&parse_tree, &[6, 0]), SqlType::Offset);
-        assert_eq!(find_sql_type(&parse_tree, &[6, 1]), SqlType::Int);
+        assert_eq!(find_node_type(&parse_tree, &[5]), NodeType::Limit);
+        assert_eq!(find_sql_type(&parse_tree,  &[5, 0]), SqlType::Limit);
+        assert_eq!(find_sql_type(&parse_tree,  &[5, 1]), SqlType::Int);
+
+        assert_eq!(find_node_type(&parse_tree, &[6]), NodeType::Offset);
+        assert_eq!(find_sql_type(&parse_tree,  &[6, 0]), SqlType::Offset);
+        assert_eq!(find_sql_type(&parse_tree,  &[6, 1]), SqlType::Int);
     }
 
     #[test]
