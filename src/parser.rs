@@ -95,26 +95,58 @@ fn parse_field_def <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
     let mut children = vec![];
-    let field_types = vec![SqlType::Literal, SqlType::Star];
+    let field_types = vec![SqlType::Int, SqlType::Float, SqlType::Text, SqlType::Literal];
 
     let token = try!(parse_any_token(lexer, &field_types));
     match token.sql_type {
         SqlType::Literal => {
-            children.push(ParseTree::new_leaf(token));
+            if let Some(dot_token) = parse_optional_token(lexer, SqlType::Dot) {
+                let scoped_types = vec![SqlType::Star, SqlType::Literal];
+                let scoped_token = try!(parse_any_token(lexer, &scoped_types));
 
-            if let Some(paren_token) = parse_optional_token(lexer, SqlType::OpenParen) {
-                children.push(ParseTree::new_leaf(paren_token));
-                children.push(try!(parse_field_selection(lexer)));
+                children.push(ParseTree::new_leaf(token));
+                children.push(ParseTree::new_leaf(dot_token));
+                children.push(ParseTree::new_leaf(scoped_token));
+            } else if let Some(open_paren_token) = parse_optional_token(lexer, SqlType::OpenParen) {
+                children.push(ParseTree::new_leaf(token));
+                children.push(ParseTree::new_leaf(open_paren_token));
 
-                let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
-                children.push(ParseTree::new_leaf(close_paren_token));
+                if let Some(close_paren_token) = parse_optional_token(lexer, SqlType::CloseParen) {
+                    children.push(ParseTree::new_leaf(close_paren_token));
+                } else if let Some(star_token) = parse_optional_token(lexer, SqlType::Star) {
+                    children.push(ParseTree::new_leaf(star_token));
+                    let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
+                    children.push(ParseTree::new_leaf(close_paren_token));
+                } else {
+                    let delimiter_types = vec![SqlType::Separator, SqlType::CloseParen];
+
+                    loop {
+                        children.push(try!(parse_field_def(lexer)));
+
+                        let next_token = try!(parse_any_token(lexer, &delimiter_types));
+                        match next_token.sql_type {
+                            SqlType::Separator => {
+                                children.push(ParseTree::new_leaf(next_token));
+                            },
+                            SqlType::CloseParen => {
+                                children.push(ParseTree::new_leaf(next_token));
+                                break;
+                            },
+                            _ => {
+                                panic!("Never get here");
+                            }
+                        }
+                    }
+                }
+            } else {
+                children.push(ParseTree::new_leaf(token));
             }
         },
-        SqlType::Star => {
+        SqlType::Int | SqlType::Float | SqlType::Text => {
             children.push(ParseTree::new_leaf(token));
         },
         _ => {
-            return Err(ParseErr::new_multi(Some(token), vec![SqlType::Literal, SqlType::Star]))
+            panic!("Never get here");
         }
     }
 
@@ -123,6 +155,10 @@ fn parse_field_def <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 
 fn parse_field_selection <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
+
+    if let Some(star_token) = parse_optional_token(lexer, SqlType::Star) {
+        return Ok(ParseTree::new_leaf(star_token));
+    }
 
     let mut children = vec![try!(parse_field_def(lexer))];
 
@@ -460,9 +496,7 @@ mod tests {
         //       0 field
         //         0 count
         //         1 (
-        //         2 field
-        //           0 field
-        //             0 *
+        //         2 *
         //         3 )
         //       1 as
         //       2 num_people
@@ -494,7 +528,7 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree, &[0, 2]), SqlType::Separator);
         assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 0]), SqlType::Literal);
         assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 1]), SqlType::OpenParen);
-        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 2, 0, 0]), SqlType::Star);
+        assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 2]), SqlType::Star);
         assert_eq!(find_sql_type(&parse_tree, &[0, 3, 0, 3]), SqlType::CloseParen);
         assert_eq!(find_sql_type(&parse_tree, &[0, 3, 1]), SqlType::As);
         assert_eq!(find_sql_type(&parse_tree, &[0, 3, 2]), SqlType::Literal);
@@ -524,6 +558,30 @@ mod tests {
     #[test]
     fn test_simple_error() {
         let parse_tree = parse(SqlTokenizer::new(&"select a b from people"));
+        assert!(parse_tree.is_err());
+    }
+
+    #[test]
+    fn test_select_star_as() {
+        let parse_tree = parse(SqlTokenizer::new(&"select * as error from people"));
+        assert!(parse_tree.is_err());
+    }
+
+    #[test]
+    fn test_select_scoped_star_as() {
+        let parse_tree = parse(SqlTokenizer::new(&"select people.* as ok from people"));
+        assert!(parse_tree.is_ok());
+    }
+
+    #[test]
+    fn test_select_value() {
+        let parse_tree = parse(SqlTokenizer::new(&"select 1 as ok from people"));
+        assert!(parse_tree.is_ok());
+    }
+
+    #[test]
+    fn test_select_double_star() {
+        let parse_tree = parse(SqlTokenizer::new(&"select count(*, *) from people"));
         assert!(parse_tree.is_err());
     }
 }
