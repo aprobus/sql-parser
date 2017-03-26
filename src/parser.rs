@@ -19,6 +19,7 @@ pub enum NodeType {
     Grouping,
     Having,
     Sort,
+    Table,
 
     Concrete(Token)
 }
@@ -191,14 +192,28 @@ fn parse_select <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     Ok(ParseTree { node_type: NodeType::Selection, children: children })
 }
 
-fn parse_from <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+fn parse_from_table <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
-    let from_token = try!(parse_token(lexer, SqlType::From));
     let table_token = try!(parse_token(lexer, SqlType::Literal));
 
     let mut children = Vec::new();
-    children.push(ParseTree::new_leaf(from_token));
     children.push(ParseTree::new_leaf(table_token));
+
+    Ok(ParseTree { node_type: NodeType::Table, children: children })
+}
+
+fn parse_from <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    where T: Iterator<Item = Token> {
+    let from_token = try!(parse_token(lexer, SqlType::From));
+
+    let mut children = Vec::new();
+    children.push(ParseTree::new_leaf(from_token));
+    children.push(try!(parse_from_table(lexer)));
+
+    while let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
+        children.push(ParseTree::new_leaf(separator_token));
+        children.push(try!(parse_from_table(lexer)));
+    }
 
     Ok(ParseTree { node_type: NodeType::Source, children: children })
 }
@@ -491,7 +506,8 @@ mod tests {
         //         0 b
         //  1 source
         //    0 from
-        //    1 people
+        //    1 table
+        //      0 people
         //  2 filter
         //    0 where
         //    1 expr
@@ -521,7 +537,8 @@ mod tests {
 
         assert_eq!(find_node_type(&parse_tree, &[1]), NodeType::Source);
         assert_eq!(find_sql_type(&parse_tree,  &[1, 0]), SqlType::From);
-        assert_eq!(find_sql_type(&parse_tree,  &[1, 1]), SqlType::Literal);
+        assert_eq!(find_node_type(&parse_tree, &[1, 1]), NodeType::Table);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 0]), SqlType::Literal);
 
         assert_eq!(find_node_type(&parse_tree, &[2]), NodeType::Filter);
         assert_eq!(find_sql_type(&parse_tree,  &[2, 0]), SqlType::Where);
@@ -558,7 +575,8 @@ mod tests {
         //       2 num_people
         //  1 source
         //    0 from
-        //    1 people
+        //    1 table
+        //      0 people
         //  2 grouping
         //    0 group
         //    1 by
@@ -601,7 +619,8 @@ mod tests {
 
         assert_eq!(find_node_type(&parse_tree, &[1]), NodeType::Source);
         assert_eq!(find_sql_type(&parse_tree,  &[1, 0]), SqlType::From);
-        assert_eq!(find_sql_type(&parse_tree,  &[1, 1]), SqlType::Literal);
+        assert_eq!(find_node_type(&parse_tree, &[1, 1]), NodeType::Table);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 0]), SqlType::Literal);
 
         assert_eq!(find_node_type(&parse_tree, &[2]), NodeType::Grouping);
         assert_eq!(find_sql_type(&parse_tree,  &[2, 0]), SqlType::Group);
@@ -659,5 +678,35 @@ mod tests {
     fn test_select_double_star() {
         let parse_tree = parse(SqlTokenizer::new(&"select count(*, *) from people"));
         assert!(parse_tree.is_err());
+    }
+
+    #[test]
+    fn test_from_cross() {
+        let parse_tree = parse(SqlTokenizer::new(&"select * from people, pets")).unwrap();
+        // 0 query
+        //   0 selection
+        //     0 select
+        //     1 star
+        //  1 source
+        //    0 from
+        //    1 table
+        //      1 people
+        //    2 ,
+        //    3 table
+        //      0 pets
+
+        assert_eq!(find_node_type(&parse_tree, &[]), NodeType::Query);
+
+        assert_eq!(find_node_type(&parse_tree, &[0]), NodeType::Selection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 0]), SqlType::Select);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1]), SqlType::Star);
+
+        assert_eq!(find_node_type(&parse_tree, &[1]), NodeType::Source);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 0]), SqlType::From);
+        assert_eq!(find_node_type(&parse_tree, &[1, 1]), NodeType::Table);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 2]), SqlType::Separator);
+        assert_eq!(find_node_type(&parse_tree, &[1, 3]), NodeType::Table);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 3, 0]), SqlType::Literal);
     }
 }
