@@ -24,6 +24,7 @@ pub enum SqlType {
 
     Limit,
     Offset,
+    All,
 
     On,
     Inner,
@@ -254,6 +255,7 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "left", sql_type: SqlType::Inner }),
             Box::new(KeywordTokenParser{ text: "right", sql_type: SqlType::Inner }),
             Box::new(KeywordTokenParser{ text: "limit", sql_type: SqlType::Limit }),
+            Box::new(KeywordTokenParser{ text: "all", sql_type: SqlType::All }),
             Box::new(KeywordTokenParser{ text: "offset", sql_type: SqlType::Offset }),
             Box::new(TextTokenParser::new()),
             Box::new(IntTokenParser::new()),

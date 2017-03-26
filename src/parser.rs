@@ -271,11 +271,13 @@ fn parse_where <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 fn parse_limit <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
     let limit_token = try!(parse_token(lexer, SqlType::Limit));
-    let int_token = try!(parse_token(lexer, SqlType::Int));
+
+    let amount_types = vec![SqlType::Int, SqlType::All];
+    let amount_token = try!(parse_any_token(lexer, &amount_types));
 
     let children = vec![
         ParseTree::new_leaf(limit_token),
-        ParseTree::new_leaf(int_token),
+        ParseTree::new_leaf(amount_token),
     ];
 
     Ok(ParseTree { node_type: NodeType::Limit, children: children})
