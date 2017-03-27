@@ -245,10 +245,10 @@ fn parse_from_table <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
         let join_table_token = try!(parse_token(lexer, SqlType::Literal));
         children.push(ParseTree::new_leaf(join_table_token));
 
-        let ok_token = try!(parse_token(lexer, SqlType::On));
-        children.push(ParseTree::new_leaf(ok_token));
+        let on_token = try!(parse_token(lexer, SqlType::On));
+        children.push(ParseTree::new_leaf(on_token));
 
-        let expr_tree = try!(parse_expr(lexer));
+        let expr_tree = try!(parse_bool_expr(lexer));
         children.push(expr_tree);
     }
 
@@ -271,10 +271,10 @@ fn parse_from <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     Ok(ParseTree { node_type: NodeType::Source, children: children })
 }
 
-fn parse_condition_value <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+fn parse_value_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
-    let var_types = vec![SqlType::Literal, SqlType::Int, SqlType::Float];
+    let var_types = vec![SqlType::Literal, SqlType::Int, SqlType::Float, SqlType::Text];
 
     let token = try!(parse_any_token(lexer, &var_types));
     let mut children = vec![];
@@ -287,6 +287,28 @@ fn parse_condition_value <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, Pars
                 let qualified_types = vec![SqlType::Literal, SqlType::Star];
                 let qualified_token = try!(parse_any_token(lexer, &qualified_types));
                 children.push(ParseTree::new_leaf(qualified_token));
+            } else if let Some(open_paren_token) = parse_optional_token(lexer, SqlType::OpenParen) {
+                children.push(ParseTree::new_leaf(open_paren_token));
+
+                if let Some(star_token) = parse_optional_token(lexer, SqlType::Star) {
+                    children.push(ParseTree::new_leaf(star_token));
+                } else {
+                    if peek_sql_type(lexer) != Some(SqlType::CloseParen) {
+                        loop {
+                            let arg_tree = try!(parse_value_expr(lexer));
+                            children.push(arg_tree);
+
+                            if let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
+                                children.push(ParseTree::new_leaf(separator_token));
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
+                children.push(ParseTree::new_leaf(close_paren_token));
             }
         },
         _ => {
@@ -297,63 +319,62 @@ fn parse_condition_value <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, Pars
     Ok(ParseTree { node_type: NodeType::Condition, children: children })
 }
 
-fn parse_condition <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
-    where T: Iterator<Item = Token> {
-
-    let var_types = vec![SqlType::Literal, SqlType::Int, SqlType::Float];
-    let assertion_types = vec![SqlType::GreaterThan, SqlType::GreaterThanEqual, SqlType::LessThan, SqlType::LessThanEqual, SqlType::Equal];
-
-    let left = try!(parse_condition_value(lexer));
-    let condition = ParseTree::new_leaf(try!(parse_any_token(lexer, &assertion_types)));
-    let right = try!(parse_condition_value(lexer));
-    let mut children = vec![left, condition, right];
-
-    Ok(ParseTree { node_type: NodeType::Condition, children: children })
-}
-
-fn parse_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+fn parse_bool_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
     let mut children = vec![];
 
-    match peek_sql_type(lexer) {
-        Some(SqlType::OpenParen) => {
-            children.push(ParseTree::new_leaf(try!(parse_token(lexer, SqlType::OpenParen))));
-            children.push(try!(parse_expr(lexer)));
-            children.push(ParseTree::new_leaf(try!(parse_token(lexer, SqlType::CloseParen))));
-        },
-        Some(SqlType::Literal) => {
-            children.push(try!(parse_condition(lexer)));
-        },
-        _ => {
-            return Err(ParseErr::new(lexer.next(), SqlType::Literal));
-        }
+    if let Some(open_paren_token) = parse_optional_token(lexer, SqlType::OpenParen) {
+        let sub_expr = try!(parse_bool_expr(lexer));
+        let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
+
+        children.push(ParseTree::new_leaf(open_paren_token));
+        children.push(sub_expr);
+        children.push(ParseTree::new_leaf(close_paren_token));
+        return Ok(ParseTree { node_type: NodeType::Expression, children: children });
     }
 
-    let expression_tree = ParseTree { node_type: NodeType::Expression, children: children };
+    let bool_op_types = vec![
+        SqlType::GreaterThanEqual,
+        SqlType::GreaterThan,
+        SqlType::LessThanEqual,
+        SqlType::LessThan,
+        SqlType::Equal,
+        SqlType::NotEqual
+    ];
 
-    let next_sql_type = peek_sql_type(lexer);
-    if let Some(sql_type) = next_sql_type {
+    let left_value_expr = try!(parse_value_expr(lexer));
+    let bool_op_token = try!(parse_any_token(lexer, &bool_op_types));
+    let right_value_expr = try!(parse_value_expr(lexer));
+
+    children.push(left_value_expr);
+    children.push(ParseTree::new_leaf(bool_op_token));
+    children.push(right_value_expr);
+
+    let bool_tree = ParseTree { node_type: NodeType::Expression, children: children };
+
+    if let Some(sql_type) = peek_sql_type(lexer) {
         match sql_type {
             SqlType::And | SqlType::Or => {
-                let mut expr_children = vec![
-                    expression_tree,
-                    ParseTree { node_type: NodeType::Concrete(lexer.next().unwrap()), children: vec![] },
-                    try!(parse_expr(lexer))
-                ];
-                Ok(ParseTree { node_type: NodeType::Expression, children: expr_children })
+                let cond_types = vec![SqlType::And, SqlType::Or];
+                let cond_token = try!(parse_any_token(lexer, &cond_types));
+                let right_bool_expr = try!(parse_bool_expr(lexer));
+
+                let cond_tree = ParseTree { node_type: NodeType::Expression, children: vec![bool_tree, ParseTree::new_leaf(cond_token), right_bool_expr] };
+
+                return Ok(cond_tree)
             },
-            _ => Ok(expression_tree)
+            _ => { }
         }
-    } else {
-        Ok(expression_tree)
     }
+
+    Ok(bool_tree)
 }
 
 fn parse_where <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
     let where_token = try!(parse_token(lexer, SqlType::Where));
-    let expr_tree = try!(parse_expr(lexer));
+    let expr_tree = try!(parse_bool_expr(lexer));
 
     let children = vec![
         ParseTree::new_leaf(where_token),
@@ -417,44 +438,44 @@ fn parse_grouping <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     Ok(ParseTree { node_type: NodeType::Grouping, children: children})
 }
 
-fn parse_having_field <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
-    where T: Iterator<Item = Token> {
+//fn parse_having_field <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+    //where T: Iterator<Item = Token> {
 
-    let field_types = vec![SqlType::Literal, SqlType::Star];
-    let assertion_types = vec![SqlType::GreaterThan, SqlType::GreaterThanEqual, SqlType::LessThan, SqlType::LessThanEqual, SqlType::Equal];
-    let compare_types = vec![SqlType::Int, SqlType::Float, SqlType::Text];
-    let bool_op_types = vec![SqlType::And, SqlType::Or];
+    //let field_types = vec![SqlType::Literal, SqlType::Star];
+    //let assertion_types = vec![SqlType::GreaterThan, SqlType::GreaterThanEqual, SqlType::LessThan, SqlType::LessThanEqual, SqlType::Equal];
+    //let compare_types = vec![SqlType::Int, SqlType::Float, SqlType::Text];
+    //let bool_op_types = vec![SqlType::And, SqlType::Or];
 
-    let name_token = try!(parse_token(lexer, SqlType::Literal));
-    let open_paren_token = try!(parse_token(lexer, SqlType::OpenParen));
-    let arg_token = try!(parse_any_token(lexer, &field_types));
-    let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
-    let assertion_token = try!(parse_any_token(lexer, &assertion_types));
-    let compare_token = try!(parse_any_token(lexer, &compare_types));
+    //let name_token = try!(parse_token(lexer, SqlType::Literal));
+    //let open_paren_token = try!(parse_token(lexer, SqlType::OpenParen));
+    //let arg_token = try!(parse_any_token(lexer, &field_types));
+    //let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
+    //let assertion_token = try!(parse_any_token(lexer, &assertion_types));
+    //let compare_token = try!(parse_any_token(lexer, &compare_types));
 
-    let children = vec![
-        ParseTree::new_leaf(name_token),
-        ParseTree::new_leaf(open_paren_token),
-        ParseTree::new_leaf(arg_token),
-        ParseTree::new_leaf(close_paren_token),
-        ParseTree::new_leaf(assertion_token),
-        ParseTree::new_leaf(compare_token),
-    ];
+    //let children = vec![
+        //ParseTree::new_leaf(name_token),
+        //ParseTree::new_leaf(open_paren_token),
+        //ParseTree::new_leaf(arg_token),
+        //ParseTree::new_leaf(close_paren_token),
+        //ParseTree::new_leaf(assertion_token),
+        //ParseTree::new_leaf(compare_token),
+    //];
 
-    let field_tree = ParseTree { node_type: NodeType::Having, children: children };
+    //let field_tree = ParseTree { node_type: NodeType::Having, children: children };
 
-    let next_sql_type = peek_sql_type(lexer);
-    if next_sql_type == Some(SqlType::And) || next_sql_type == Some(SqlType::Or) {
-        let mut expr_children = vec![
-            field_tree,
-            ParseTree::new_leaf(try!(parse_any_token(lexer, &bool_op_types))),
-            try!(parse_having_field(lexer))
-        ];
-        Ok(ParseTree { node_type: NodeType::Expression, children: expr_children })
-    } else {
-        Ok(field_tree)
-    }
-}
+    //let next_sql_type = peek_sql_type(lexer);
+    //if next_sql_type == Some(SqlType::And) || next_sql_type == Some(SqlType::Or) {
+        //let mut expr_children = vec![
+            //field_tree,
+            //ParseTree::new_leaf(try!(parse_any_token(lexer, &bool_op_types))),
+            //try!(parse_having_field(lexer))
+        //];
+        //Ok(ParseTree { node_type: NodeType::Expression, children: expr_children })
+    //} else {
+        //Ok(field_tree)
+    //}
+//}
 
 fn parse_having <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
@@ -462,7 +483,7 @@ fn parse_having <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 
     let children = vec![
         ParseTree::new_leaf(having_token),
-        try!(parse_having_field(lexer))
+        try!(parse_bool_expr(lexer))
     ];
 
     Ok(ParseTree { node_type: NodeType::Having, children: children})
@@ -592,19 +613,17 @@ mod tests {
         //    1 expr
         //      0 expr
         //        0 cond
-        //          0 cond
-        //            0 a
-        //          1 >
-        //          2 cond
-        //            0 1
+        //          0 a
+        //        1 >
+        //        2 cond
+        //          0 1
         //      1 and
         //      2 expr
         //        0 cond
-        //          0 cond
-        //            0 a
-        //          1 <
-        //          2 cond
-        //            0 10
+        //          0 a
+        //        1 <
+        //        2 cond
+        //          0 10
 
         assert_eq!(find_node_type(&parse_tree, &[]), NodeType::Query);
 
@@ -628,18 +647,16 @@ mod tests {
         assert_eq!(find_node_type(&parse_tree, &[2, 1]), NodeType::Expression);
         assert_eq!(find_node_type(&parse_tree, &[2, 1, 0]), NodeType::Expression);
         assert_eq!(find_node_type(&parse_tree, &[2, 1, 0, 0]), NodeType::Condition);
-        assert_eq!(find_node_type(&parse_tree, &[2, 1, 0, 0, 0]), NodeType::Condition);
-        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 0, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 0, 1]), SqlType::GreaterThan);
-        assert_eq!(find_node_type(&parse_tree, &[2, 1, 0, 0, 2]), NodeType::Condition);
-        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 0, 2, 0]), SqlType::Int);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 1]), SqlType::GreaterThan);
+        assert_eq!(find_node_type(&parse_tree, &[2, 1, 0, 2]), NodeType::Condition);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 0, 2, 0]), SqlType::Int);
         assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 1]), SqlType::And);
         assert_eq!(find_node_type(&parse_tree, &[2, 1, 2, 0]), NodeType::Condition);
-        assert_eq!(find_node_type(&parse_tree, &[2, 1, 2, 0, 0]), NodeType::Condition);
-        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 0, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 0, 1]), SqlType::LessThan);
-        assert_eq!(find_node_type(&parse_tree, &[2, 1, 2, 0, 2]), NodeType::Condition);
-        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 0, 2, 0]), SqlType::Int);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 1]), SqlType::LessThan);
+        assert_eq!(find_node_type(&parse_tree, &[2, 1, 2, 2]), NodeType::Condition);
+        assert_eq!(find_sql_type(&parse_tree,  &[2, 1, 2, 2, 0]), SqlType::Int);
     }
 
     #[test]
@@ -671,12 +688,14 @@ mod tests {
         //  3 having
         //    0 having
         //    1 field
-        //      0 count
-        //      1 (
-        //      2 *
-        //      3 )
+        //      0 expr
+        //        0 count
+        //        1 (
+        //        2 *
+        //        3 )
         //      4 >
-        //      5 3
+        //      5 expr
+        //        0 3
         //  4 sort
         //    0 order
         //    1 by
@@ -716,12 +735,14 @@ mod tests {
 
         assert_eq!(find_node_type(&parse_tree, &[3]), NodeType::Having);
         assert_eq!(find_sql_type(&parse_tree,  &[3, 0]), SqlType::Having);
-        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 1]), SqlType::OpenParen);
-        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 2]), SqlType::Star);
-        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 3]), SqlType::CloseParen);
-        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 4]), SqlType::GreaterThan);
-        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 5]), SqlType::Int);
+        assert_eq!(find_node_type(&parse_tree, &[3, 1, 0]), NodeType::Condition);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 1]), SqlType::OpenParen);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 2]), SqlType::Star);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 3]), SqlType::CloseParen);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 1]), SqlType::GreaterThan);
+        assert_eq!(find_node_type(&parse_tree, &[3, 1, 2]), NodeType::Condition);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 2, 0]), SqlType::Int);
 
         assert_eq!(find_node_type(&parse_tree, &[4]), NodeType::Sort);
         assert_eq!(find_sql_type(&parse_tree,  &[4, 0]), SqlType::Order);
@@ -814,14 +835,13 @@ mod tests {
         //      2 pets
         //      3 on
         //      4 expression
-        //        0 condition
-        //          0 expr
-        //            0 people
-        //            1 .
-        //            2 id
-        //          1 =
-        //          2 expr
-        //            0 person_id
+        //        0 expr
+        //          0 people
+        //          1 .
+        //          2 id
+        //        1 =
+        //        2 expr
+        //          0 person_id
 
         assert_eq!(find_node_type(&parse_tree, &[]), NodeType::Query);
 
@@ -840,12 +860,17 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 3]), SqlType::On);
         assert_eq!(find_node_type(&parse_tree, &[1, 1, 4]), NodeType::Expression);
         assert_eq!(find_node_type(&parse_tree, &[1, 1, 4, 0]), NodeType::Condition);
-        assert_eq!(find_node_type(&parse_tree, &[1, 1, 4, 0, 0]), NodeType::Condition);
-        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 0, 0, 0]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 0, 0, 1]), SqlType::Dot);
-        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 0, 0, 2]), SqlType::Literal);
-        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 0, 1]), SqlType::Equal);
-        assert_eq!(find_node_type(&parse_tree, &[1, 1, 4, 0, 2]), NodeType::Condition);
-        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 0, 2, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 0, 1]), SqlType::Dot);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 0, 2]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 1]), SqlType::Equal);
+        assert_eq!(find_node_type(&parse_tree, &[1, 1, 4, 2]), NodeType::Condition);
+        assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 2, 0]), SqlType::Literal);
+    }
+
+    #[test]
+    fn test_having_field() {
+        let parse_tree = parse(SqlTokenizer::new(&"select * from people group by age having age > 4"));
+        assert!(parse_tree.is_ok());
     }
 }

@@ -39,6 +39,7 @@ pub enum SqlType {
     LessThan,
     LessThanEqual,
     Equal,
+    NotEqual,
     And,
     Or,
 
@@ -242,6 +243,7 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: ">=", sql_type: SqlType::GreaterThanEqual }),
             Box::new(KeywordTokenParser{ text: "<", sql_type: SqlType::LessThan }),
             Box::new(KeywordTokenParser{ text: "<=", sql_type: SqlType::LessThanEqual }),
+            Box::new(KeywordTokenParser{ text: "!=", sql_type: SqlType::NotEqual }),
             Box::new(KeywordTokenParser{ text: "=", sql_type: SqlType::Equal }),
             Box::new(KeywordTokenParser{ text: "order", sql_type: SqlType::Order }),
             Box::new(KeywordTokenParser{ text: "group", sql_type: SqlType::Group }),
