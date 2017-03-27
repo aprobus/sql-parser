@@ -1,9 +1,7 @@
-use std::str::Chars;
 use std::iter::Iterator;
 use std::iter::Peekable;
-use std::collections::HashSet;
 
-use lexer::{Token, SqlTokenizer, SqlType};
+use lexer::{Token, SqlType};
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum NodeType {
@@ -417,7 +415,7 @@ fn parse_group_field <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr
     let field_token = try!(parse_token(lexer, SqlType::Literal));
 
     if let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
-        let mut children = vec![ParseTree::new_leaf(field_token), ParseTree::new_leaf(separator_token), try!(parse_group_field(lexer))];
+        let children = vec![ParseTree::new_leaf(field_token), ParseTree::new_leaf(separator_token), try!(parse_group_field(lexer))];
         Ok(ParseTree { node_type: NodeType::Grouping, children: children })
     } else {
         Ok(ParseTree::new_leaf(field_token))
@@ -559,7 +557,7 @@ fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     Ok(ParseTree { node_type: NodeType::Query, children: children })
 }
 
-pub fn parse <T> (mut lexer: T) -> Result<ParseTree, ParseErr>
+pub fn parse <T> (lexer: T) -> Result<ParseTree, ParseErr>
   where T: Iterator<Item = Token> {
     let mut peekable_lexer = Box::new(lexer.peekable());
     parse_query(&mut peekable_lexer)
