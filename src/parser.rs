@@ -560,7 +560,13 @@ fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 pub fn parse <T> (lexer: T) -> Result<ParseTree, ParseErr>
   where T: Iterator<Item = Token> {
     let mut peekable_lexer = Box::new(lexer.peekable());
-    parse_query(&mut peekable_lexer)
+    let tree = try!(parse_query(&mut peekable_lexer));
+
+    if let Some(next_token) = peekable_lexer.next() {
+        Err(ParseErr { invalid_token: Some(next_token), sql_types: vec![] })
+    } else {
+        Ok(tree)
+    }
 }
 
 #[cfg(test)]
@@ -870,5 +876,11 @@ mod tests {
     fn test_having_field() {
         let parse_tree = parse(SqlTokenizer::new(&"select * from people group by age having age > 4"));
         assert!(parse_tree.is_ok());
+    }
+
+    #[test]
+    fn test_query_extra() {
+        let parse_tree = parse(SqlTokenizer::new(&"select * from people select"));
+        assert!(parse_tree.is_err());
     }
 }
