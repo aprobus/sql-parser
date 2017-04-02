@@ -22,6 +22,10 @@ pub enum SqlType {
     Asc,
     Desc,
 
+    Plus,
+    Minus,
+    Divide,
+
     Limit,
     Offset,
     All,
@@ -263,6 +267,9 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "limit", sql_type: SqlType::Limit }),
             Box::new(KeywordTokenParser{ text: "all", sql_type: SqlType::All }),
             Box::new(KeywordTokenParser{ text: "offset", sql_type: SqlType::Offset }),
+            Box::new(KeywordTokenParser{ text: "+", sql_type: SqlType::Plus }),
+            Box::new(KeywordTokenParser{ text: "-", sql_type: SqlType::Minus }),
+            Box::new(KeywordTokenParser{ text: "/", sql_type: SqlType::Divide }),
             Box::new(QuotedTokenParser::new(SqlType::Text, '\'')),
             Box::new(IntTokenParser::new()),
             Box::new(FloatTokenParser::new()),

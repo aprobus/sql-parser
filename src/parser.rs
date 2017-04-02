@@ -13,6 +13,8 @@ pub enum NodeType {
     FieldValueFunction,
     FieldValueStar,
     FieldValueScoped,
+    FieldValueParenGroup,
+    FieldValueMath,
 
     ExprBoolCond,
     ExprBoolLogic,
@@ -103,14 +105,31 @@ fn parse_optional_token <T> (lexer: &mut Peekable<T>, sql_type: SqlType) -> Opti
     }
 }
 
+fn parse_optional_math_token <T> (lexer: &mut Peekable<T>) -> Option<Token>
+    where T: Iterator<Item = Token> {
+
+    if let Some(next_token) = peek_sql_type(lexer) {
+        match next_token {
+            SqlType::Plus | SqlType::Minus | SqlType::Divide | SqlType::Star => {
+                lexer.next()
+            },
+            _ => {
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
 fn parse_value_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
     let mut children = vec![];
-    let field_types = vec![SqlType::Int, SqlType::Float, SqlType::Text, SqlType::Literal, SqlType::Star];
+    let field_types = vec![SqlType::Int, SqlType::Float, SqlType::Text, SqlType::Literal, SqlType::Star, SqlType::OpenParen];
 
     let token = try!(parse_any_token(lexer, &field_types));
-    match token.sql_type {
+    let field_tree = match token.sql_type {
         SqlType::Literal => {
             if let Some(dot_token) = parse_optional_token(lexer, SqlType::Dot) {
                 let scoped_types = vec![SqlType::Star, SqlType::Literal];
@@ -120,7 +139,7 @@ fn parse_value_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
                 children.push(ParseTree::new_leaf(dot_token));
                 children.push(ParseTree::new_leaf(scoped_token));
 
-                Ok(ParseTree { node_type: NodeType::FieldValueScoped, children: children })
+                ParseTree { node_type: NodeType::FieldValueScoped, children: children }
             } else if let Some(open_paren_token) = parse_optional_token(lexer, SqlType::OpenParen) {
                 children.push(ParseTree::new_leaf(token));
                 children.push(ParseTree::new_leaf(open_paren_token));
@@ -153,24 +172,41 @@ fn parse_value_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
                     }
                 }
 
-                Ok(ParseTree { node_type: NodeType::FieldValueFunction, children: children })
+                ParseTree { node_type: NodeType::FieldValueFunction, children: children }
             } else {
                 children.push(ParseTree::new_leaf(token));
 
-                Ok(ParseTree { node_type: NodeType::FieldValueLiteral, children: children })
+                ParseTree { node_type: NodeType::FieldValueLiteral, children: children }
             }
         },
         SqlType::Int | SqlType::Float | SqlType::Text => {
             children.push(ParseTree::new_leaf(token));
-            Ok(ParseTree { node_type: NodeType::FieldValuePrimitive, children: children })
+            ParseTree { node_type: NodeType::FieldValuePrimitive, children: children }
         },
         SqlType::Star => {
             children.push(ParseTree::new_leaf(token));
-            Ok(ParseTree { node_type: NodeType::FieldValueStar, children: children })
+            ParseTree { node_type: NodeType::FieldValueStar, children: children }
+        },
+        SqlType::OpenParen => {
+            let value_tree = try!(parse_value_expr(lexer));
+            let close_token = try!(parse_token(lexer, SqlType::CloseParen));
+
+            children.push(ParseTree::new_leaf(token));
+            children.push(value_tree);
+            children.push(ParseTree::new_leaf(close_token));
+            ParseTree { node_type: NodeType::FieldValueParenGroup, children: children }
         },
         _ => {
             panic!("Never get here");
         }
+    };
+
+    if let Some(math_token) = parse_optional_math_token(lexer) {
+        let math_children = vec![field_tree, ParseTree::new_leaf(math_token), try!(parse_value_expr(lexer))];
+
+        Ok(ParseTree { node_type: NodeType::FieldValueMath, children: math_children })
+    } else {
+        Ok(field_tree)
     }
 }
 
@@ -200,7 +236,7 @@ fn parse_select <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 
     if let Some(sql_type) = peek_sql_type(lexer) {
         match sql_type {
-            SqlType::Literal | SqlType::Int | SqlType::Float | SqlType::Text | SqlType::Star => {
+            SqlType::Literal | SqlType::Int | SqlType::Float | SqlType::Text | SqlType::Star | SqlType::OpenParen => {
                 children.push(try!(parse_field_selection(lexer)));
 
                 while peek_sql_type(lexer) == Some(SqlType::Separator) {
@@ -996,7 +1032,7 @@ mod tests {
         // 0 query
         //   0 selection
         //     0 select
-        //     1 field
+        //     1 field_def
         //       0 field_value_star
         //         0 star
         //  1 source
@@ -1042,5 +1078,54 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 2]), SqlType::CloseParen);
         assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 3]), SqlType::As);
         assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4]), SqlType::Literal);
+    }
+
+    #[test]
+    fn test_query_math() {
+        // 0 query
+        //   0 selection
+        //     0 select
+        //     1 field_def
+        //       0 field_value_math
+        //         0 field_value_paren_group
+        //           0 (
+        //           1 field_value_math
+        //             0 field_value_literal
+        //               0 age
+        //             1 +
+        //             2 field_value_primitive
+        //               0 1
+        //           2 )
+        //         1 /
+        //         2 field_value_math
+        //           2 field_value_primitive
+        //             0 2
+        //           3 +
+        //           4 field_value_primitive
+        //             0 4.2
+        let parse_tree = parse(SqlTokenizer::new(&"select (age + 1) / 2 + 4.2 from people")).unwrap();
+
+        assert_eq!(find_node_type(&parse_tree, &[]), NodeType::Query);
+
+        assert_eq!(find_node_type(&parse_tree, &[0]), NodeType::Selection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 0]), SqlType::Select);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1]), NodeType::FieldDef);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0]), NodeType::FieldValueMath);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0, 0]), NodeType::FieldValueParenGroup);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0, 0]), SqlType::OpenParen);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0, 0, 1]), NodeType::FieldValueMath);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0, 0, 1, 0]), NodeType::FieldValueLiteral);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0, 1, 0, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0, 1, 1]), SqlType::Plus);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0, 0, 1, 2]), NodeType::FieldValuePrimitive);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0, 1, 2, 0]), SqlType::Int);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0, 2]), SqlType::CloseParen);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 1]), SqlType::Divide);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0, 2]), NodeType::FieldValueMath);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0, 2, 0]), NodeType::FieldValuePrimitive);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 2, 0, 0]), SqlType::Int);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 2, 1]), SqlType::Plus);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0, 2, 2]), NodeType::FieldValuePrimitive);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 2, 2, 0]), SqlType::Float);
     }
 }
