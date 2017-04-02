@@ -179,12 +179,20 @@ fn parse_select <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 
     let mut children = Vec::new();
     children.push(ParseTree::new_leaf(select_token));
-    children.push(try!(parse_field_selection(lexer)));
 
-    while peek_sql_type(lexer) == Some(SqlType::Separator) {
-        let sep_token = try!(parse_token(lexer, SqlType::Separator));
-        children.push(ParseTree::new_leaf(sep_token));
-        children.push(try!(parse_field_selection(lexer)));
+    if let Some(sql_type) = peek_sql_type(lexer) {
+        match sql_type {
+            SqlType::Literal | SqlType::Int | SqlType::Float | SqlType::Text | SqlType::Star => {
+                children.push(try!(parse_field_selection(lexer)));
+
+                while peek_sql_type(lexer) == Some(SqlType::Separator) {
+                    let sep_token = try!(parse_token(lexer, SqlType::Separator));
+                    children.push(ParseTree::new_leaf(sep_token));
+                    children.push(try!(parse_field_selection(lexer)));
+                }
+            },
+            _ => {}
+        }
     }
 
     Ok(ParseTree { node_type: NodeType::Selection, children: children })
@@ -528,7 +536,10 @@ fn parse_query <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     let mut children = Vec::new();
 
     children.push(try!(parse_select(lexer)));
-    children.push(try!(parse_from(lexer)));
+
+    if peek_sql_type(lexer) == Some(SqlType::From) {
+        children.push(try!(parse_from(lexer)));
+    }
 
     if peek_sql_type(lexer) == Some(SqlType::Where) {
         children.push(try!(parse_where(lexer)));
@@ -870,6 +881,19 @@ mod tests {
         assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 1]), SqlType::Equal);
         assert_eq!(find_node_type(&parse_tree, &[1, 1, 4, 2]), NodeType::Condition);
         assert_eq!(find_sql_type(&parse_tree,  &[1, 1, 4, 2, 0]), SqlType::Literal);
+    }
+
+    #[test]
+    fn test_from_empty() {
+        let parse_tree = parse(SqlTokenizer::new(&"select")).unwrap();
+        // 0 query
+        //   0 selection
+        //     0 select
+
+        assert_eq!(find_node_type(&parse_tree, &[]), NodeType::Query);
+
+        assert_eq!(find_node_type(&parse_tree, &[0]), NodeType::Selection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 0]), SqlType::Select);
     }
 
     #[test]
