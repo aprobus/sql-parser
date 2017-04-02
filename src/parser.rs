@@ -103,7 +103,7 @@ fn parse_optional_token <T> (lexer: &mut Peekable<T>, sql_type: SqlType) -> Opti
     }
 }
 
-fn parse_field_def <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
+fn parse_value_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
     let mut children = vec![];
@@ -135,7 +135,7 @@ fn parse_field_def <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
                     let delimiter_types = vec![SqlType::Separator, SqlType::CloseParen];
 
                     loop {
-                        children.push(try!(parse_field_def(lexer)));
+                        children.push(try!(parse_value_expr(lexer)));
 
                         let next_token = try!(parse_any_token(lexer, &delimiter_types));
                         match next_token.sql_type {
@@ -177,7 +177,7 @@ fn parse_field_def <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 fn parse_field_selection <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
-    let mut children = vec![try!(parse_field_def(lexer))];
+    let mut children = vec![try!(parse_value_expr(lexer))];
 
     if let Some(as_token) = parse_optional_token(lexer, SqlType::As) {
         let literal_token = try!(parse_token(lexer, SqlType::Literal));
@@ -330,63 +330,6 @@ fn parse_from <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     }
 
     Ok(ParseTree { node_type: NodeType::Source, children: children })
-}
-
-fn parse_value_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
-    where T: Iterator<Item = Token> {
-
-    let var_types = vec![SqlType::Literal, SqlType::Int, SqlType::Float, SqlType::Text];
-
-    let token = try!(parse_any_token(lexer, &var_types));
-    let mut children = vec![];
-
-    match token.sql_type {
-        SqlType::Literal => {
-            children.push(ParseTree::new_leaf(token));
-
-            if let Some(dot_token) = parse_optional_token(lexer, SqlType::Dot) {
-                children.push(ParseTree::new_leaf(dot_token));
-                let qualified_types = vec![SqlType::Literal, SqlType::Star];
-                let qualified_token = try!(parse_any_token(lexer, &qualified_types));
-                children.push(ParseTree::new_leaf(qualified_token));
-
-                Ok(ParseTree { node_type: NodeType::FieldValueScoped, children: children })
-            } else if let Some(open_paren_token) = parse_optional_token(lexer, SqlType::OpenParen) {
-                children.push(ParseTree::new_leaf(open_paren_token));
-
-                if let Some(star_token) = parse_optional_token(lexer, SqlType::Star) {
-                    children.push(ParseTree::new_leaf(star_token));
-                } else {
-                    if peek_sql_type(lexer) != Some(SqlType::CloseParen) {
-                        loop {
-                            let arg_tree = try!(parse_value_expr(lexer));
-                            children.push(arg_tree);
-
-                            if let Some(separator_token) = parse_optional_token(lexer, SqlType::Separator) {
-                                children.push(ParseTree::new_leaf(separator_token));
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
-                children.push(ParseTree::new_leaf(close_paren_token));
-
-                Ok(ParseTree { node_type: NodeType::FieldValueFunction, children: children })
-            } else {
-                Ok(ParseTree { node_type: NodeType::FieldValueLiteral, children: children })
-            }
-        },
-        SqlType::Int | SqlType::Float | SqlType::Text => {
-            children.push(ParseTree::new_leaf(token));
-            Ok(ParseTree { node_type: NodeType::FieldValuePrimitive, children: children })
-        },
-        _ => {
-            panic!("Never get here");
-        }
-    }
 }
 
 fn parse_bool_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
