@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_select_function() {
-        let parse_tree = parse(SqlTokenizer::new(&"select age, count(*) as num_people from people group by age having count(*) > 3 order by age desc limit 1 offset 2")).unwrap();
+        let parse_tree = parse(SqlTokenizer::new(&"select \"my age\", count(*) as num_people from people group by age having count(*) > 3 order by age desc limit 1 offset 2")).unwrap();
         // 0 query
         //   0 selection
         //     0 select

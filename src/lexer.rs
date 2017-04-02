@@ -174,18 +174,21 @@ impl TokenParser for IntTokenParser {
     }
 }
 
-struct TextTokenParser { }
+struct QuotedTokenParser {
+    sql_type: SqlType,
+    quote_char: char
+}
 
-impl TextTokenParser {
-    fn new() -> TextTokenParser {
-        TextTokenParser { }
+impl QuotedTokenParser {
+    fn new(sql_type: SqlType, quote_char: char) -> QuotedTokenParser {
+        QuotedTokenParser { sql_type: sql_type, quote_char: quote_char }
     }
 }
 
-impl TokenParser for TextTokenParser {
+impl TokenParser for QuotedTokenParser {
     fn parse(&self, text: &str) -> Option<Token> {
         let mut chars = text.chars();
-        if chars.next() != Some('\'') {
+        if chars.next() != Some(self.quote_char) {
             return None;
         }
 
@@ -198,7 +201,7 @@ impl TokenParser for TextTokenParser {
                 return None;
             }
 
-            if next_char == '\'' {
+            if next_char == self.quote_char {
                 if previous_char == Some('\\') {
                     parsed_text.pop();
                 } else {
@@ -212,7 +215,7 @@ impl TokenParser for TextTokenParser {
 
         if has_end_quote {
             parsed_text.pop();
-            Some(Token { text: parsed_text, sql_type: SqlType::Text })
+            Some(Token { text: parsed_text, sql_type: self.sql_type.clone() })
         } else {
             None
         }
@@ -260,9 +263,10 @@ impl <'a> SqlTokenizer<'a> {
             Box::new(KeywordTokenParser{ text: "limit", sql_type: SqlType::Limit }),
             Box::new(KeywordTokenParser{ text: "all", sql_type: SqlType::All }),
             Box::new(KeywordTokenParser{ text: "offset", sql_type: SqlType::Offset }),
-            Box::new(TextTokenParser::new()),
+            Box::new(QuotedTokenParser::new(SqlType::Text, '\'')),
             Box::new(IntTokenParser::new()),
             Box::new(FloatTokenParser::new()),
+            Box::new(QuotedTokenParser::new(SqlType::Literal, '"')),
             Box::new(LiteralTokenParser::new())
         ];
 
