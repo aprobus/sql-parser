@@ -96,7 +96,7 @@ fn parse_field_def <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
 
     let mut children = vec![];
-    let field_types = vec![SqlType::Int, SqlType::Float, SqlType::Text, SqlType::Literal];
+    let field_types = vec![SqlType::Int, SqlType::Float, SqlType::Text, SqlType::Literal, SqlType::Star];
 
     let token = try!(parse_any_token(lexer, &field_types));
     match token.sql_type {
@@ -143,7 +143,7 @@ fn parse_field_def <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
                 children.push(ParseTree::new_leaf(token));
             }
         },
-        SqlType::Int | SqlType::Float | SqlType::Text => {
+        SqlType::Int | SqlType::Float | SqlType::Text | SqlType::Star => {
             children.push(ParseTree::new_leaf(token));
         },
         _ => {
@@ -156,10 +156,6 @@ fn parse_field_def <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 
 fn parse_field_selection <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
     where T: Iterator<Item = Token> {
-
-    if let Some(star_token) = parse_optional_token(lexer, SqlType::Star) {
-        return Ok(ParseTree::new_leaf(star_token));
-    }
 
     let mut children = vec![try!(parse_field_def(lexer))];
 
@@ -781,8 +777,8 @@ mod tests {
 
     #[test]
     fn test_select_star_as() {
-        let parse_tree = parse(SqlTokenizer::new(&"select * as error from people"));
-        assert!(parse_tree.is_err());
+        let parse_tree = parse(SqlTokenizer::new(&"select * as logical_error from people"));
+        assert!(parse_tree.is_ok());
     }
 
     #[test]
@@ -809,7 +805,9 @@ mod tests {
         // 0 query
         //   0 selection
         //     0 select
-        //     1 star
+        //     1 field
+        //       0 field
+        //         0 star
         //  1 source
         //    0 from
         //    1 table
@@ -822,7 +820,9 @@ mod tests {
 
         assert_eq!(find_node_type(&parse_tree, &[0]), NodeType::Selection);
         assert_eq!(find_sql_type(&parse_tree,  &[0, 0]), SqlType::Select);
-        assert_eq!(find_sql_type(&parse_tree,  &[0, 1]), SqlType::Star);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1]), NodeType::FieldSelection);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0]), NodeType::FieldSelection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0]), SqlType::Star);
 
         assert_eq!(find_node_type(&parse_tree, &[1]), NodeType::Source);
         assert_eq!(find_sql_type(&parse_tree,  &[1, 0]), SqlType::From);
@@ -839,7 +839,9 @@ mod tests {
         // 0 query
         //   0 selection
         //     0 select
-        //     1 star
+        //     1 field
+        //       0 field
+        //         0 star
         //  1 source
         //    0 from
         //    1 table
@@ -862,7 +864,9 @@ mod tests {
 
         assert_eq!(find_node_type(&parse_tree, &[0]), NodeType::Selection);
         assert_eq!(find_sql_type(&parse_tree,  &[0, 0]), SqlType::Select);
-        assert_eq!(find_sql_type(&parse_tree,  &[0, 1]), SqlType::Star);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1]), NodeType::FieldSelection);
+        assert_eq!(find_node_type(&parse_tree, &[0, 1, 0]), NodeType::FieldSelection);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 1, 0, 0]), SqlType::Star);
 
         assert_eq!(find_node_type(&parse_tree, &[1]), NodeType::Source);
         assert_eq!(find_sql_type(&parse_tree,  &[1, 0]), SqlType::From);
