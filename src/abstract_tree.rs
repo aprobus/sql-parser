@@ -27,14 +27,24 @@ pub struct Field {
     field_type: FieldType
 }
 
-pub struct Selection {
-    fields: Vec<Field>
+#[derive(PartialEq, Debug, Clone)]
+pub enum JoinType {
+    Inner,
+    Left,
+    Right,
+    Full
 }
 
-pub struct Source {}
+#[derive(PartialEq, Debug, Clone)]
+pub enum Source {
+    Table(String),
+    Join { left: Box<Source>, right: Box<Source>, join_type: JoinType },
+    Query
+}
 
 pub struct Query {
-    selection: Selection
+    fields: Vec<Field>,
+    sources: Vec<Source>
 }
 
 fn read_token(tree: &ParseTree) -> Token {
@@ -87,8 +97,9 @@ fn parse_named_field_def(tree: &ParseTree) -> Field {
     }
 }
 
-fn parse_selection(tree: &ParseTree) -> Selection {
-    let fields = tree.children.iter().filter_map(|child| {
+fn parse_selection(tree: &ParseTree) -> Vec<Field> {
+    //TODO: Strict validation?
+    tree.children.iter().filter_map(|child| {
         match child.node_type {
             NodeType::FieldDef | NodeType::NamedFieldDef => {
                 Some(parse_named_field_def(&child))
@@ -97,14 +108,89 @@ fn parse_selection(tree: &ParseTree) -> Selection {
                 None
             }
         }
-    }).collect();
+    }).collect()
+}
 
-    Selection { fields: fields }
+fn parse_source(tree: &ParseTree) -> Source {
+    if tree.node_type != NodeType::SourceTable {
+        panic!("Unknown type");
+    }
+
+    match tree.children[0].node_type {
+        NodeType::Concrete(ref token) => {
+            Source::Table(token.text.clone())
+        },
+        _ => {
+            panic!("Waddup");
+        }
+    }
+}
+
+fn parse_sources(tree: &ParseTree) -> Vec<Source> {
+    if tree.node_type != NodeType::Source {
+        panic!("Unknown type {:?}", tree.node_type);
+    }
+
+    let mut child_iter = tree.children.iter();
+    match child_iter.next().unwrap().node_type {
+        NodeType::Concrete(ref token) => {
+            match token.sql_type {
+                SqlType::From => { },
+                _ => {
+                    panic!("Wattup");
+                }
+            }
+        },
+        _ => {
+            panic!("Wattup");
+        }
+    }
+
+    child_iter.enumerate().filter_map(|(i, child)| {
+        if i & 1 == 0 {
+            Some(parse_source(&child))
+        } else {
+            match child.node_type {
+                NodeType::Concrete(ref token) => {
+                    match token.sql_type {
+                        SqlType::Separator => {},
+                        _ => {
+                            panic!("Not separator");
+                        }
+                    }
+                },
+                _ => {
+                    panic!("Not concrete node");
+                }
+            }
+            None
+        }
+    }).collect()
+}
+
+fn is_node_type(tree: Option<&ParseTree>, expected_type: NodeType) -> bool {
+    tree.map(|ref child| child.node_type == NodeType::Source).unwrap_or(false)
 }
 
 pub fn parse(tree: &ParseTree) -> Query {
-    let selection = parse_selection(&tree.children[0]);
-    Query { selection: selection }
+    let mut child_iter = tree.children.iter();
+    let mut current_child = child_iter.next();
+
+    let fields = parse_selection(current_child.as_ref().unwrap());
+    current_child = child_iter.next();
+
+    let sources = if is_node_type(current_child, NodeType::Source) {
+        let sources = parse_sources(current_child.unwrap());
+        current_child = child_iter.next();
+        sources
+    } else {
+        vec![]
+    };
+
+    Query {
+        fields: fields,
+        sources: sources
+    }
 }
 
 #[cfg(test)]
@@ -118,9 +204,11 @@ mod tests {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select age, name as person_name from people")).unwrap();
 
         let query = parse(&parse_tree);
-        assert_eq!(&query.selection.fields, &vec![
+        assert_eq!(&query.fields, &vec![
                    Field{ name: "age".to_string(), field_type: FieldType::Literal("age".to_string()) },
                    Field{ name: "person_name".to_string(), field_type: FieldType::Literal("name".to_string()) }
         ]);
+
+        assert_eq!(&query.sources, &vec![ Source::Table("people".to_string()) ]);
     }
 }
