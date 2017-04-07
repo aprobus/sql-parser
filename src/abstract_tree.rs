@@ -98,6 +98,8 @@ fn parse_named_field_def(tree: &ParseTree) -> Field {
 }
 
 fn parse_selection(tree: &ParseTree) -> Vec<Field> {
+    assert_node_type(tree, NodeType::Selection);
+
     //TODO: Strict validation?
     tree.children.iter().filter_map(|child| {
         match child.node_type {
@@ -112,9 +114,7 @@ fn parse_selection(tree: &ParseTree) -> Vec<Field> {
 }
 
 fn parse_source(tree: &ParseTree) -> Source {
-    if tree.node_type != NodeType::SourceTable {
-        panic!("Unknown type");
-    }
+    assert_node_type(tree, NodeType::SourceTable);
 
     match tree.children[0].node_type {
         NodeType::Concrete(ref token) => {
@@ -127,49 +127,19 @@ fn parse_source(tree: &ParseTree) -> Source {
 }
 
 fn parse_sources(tree: &ParseTree) -> Vec<Source> {
-    if tree.node_type != NodeType::Source {
-        panic!("Unknown type {:?}", tree.node_type);
-    }
+    assert_node_type(tree, NodeType::Source);
 
     let mut child_iter = tree.children.iter();
-    match child_iter.next().unwrap().node_type {
-        NodeType::Concrete(ref token) => {
-            match token.sql_type {
-                SqlType::From => { },
-                _ => {
-                    panic!("Wattup");
-                }
-            }
-        },
-        _ => {
-            panic!("Wattup");
-        }
-    }
+    assert_opt_tree_sql_type(child_iter.next(), SqlType::From);
 
     child_iter.enumerate().filter_map(|(i, child)| {
         if i & 1 == 0 {
             Some(parse_source(&child))
         } else {
-            match child.node_type {
-                NodeType::Concrete(ref token) => {
-                    match token.sql_type {
-                        SqlType::Separator => {},
-                        _ => {
-                            panic!("Not separator");
-                        }
-                    }
-                },
-                _ => {
-                    panic!("Not concrete node");
-                }
-            }
+            assert_tree_sql_type(child, SqlType::Separator);
             None
         }
     }).collect()
-}
-
-fn is_node_type(tree: Option<&ParseTree>, expected_type: NodeType) -> bool {
-    tree.map(|ref child| child.node_type == NodeType::Source).unwrap_or(false)
 }
 
 pub fn parse(tree: &ParseTree) -> Query {
@@ -191,6 +161,37 @@ pub fn parse(tree: &ParseTree) -> Query {
         fields: fields,
         sources: sources
     }
+}
+
+fn assert_node_type(tree: &ParseTree, expected_type: NodeType) {
+    if tree.node_type != expected_type {
+        panic!("Unknown type {:?}", tree.node_type);
+    }
+}
+
+fn assert_tree_sql_type(tree: &ParseTree, sql_type: SqlType) {
+    match tree.node_type {
+        NodeType::Concrete(ref token) => {
+            if token.sql_type != sql_type {
+                panic!("Expected {:?}, got {:?}", sql_type, token.sql_type);
+            }
+        },
+        _ => {
+            panic!("Invalid node type: {:?}", tree.node_type);
+        }
+    }
+}
+
+fn assert_opt_tree_sql_type(tree_opt: Option<&ParseTree>, sql_type: SqlType) {
+    if let Some(tree) = tree_opt {
+        assert_tree_sql_type(tree, sql_type);
+    } else {
+        panic!("Tree missing!");
+    }
+}
+
+fn is_node_type(tree: Option<&ParseTree>, expected_type: NodeType) -> bool {
+    tree.map(|ref child| child.node_type == NodeType::Source).unwrap_or(false)
 }
 
 #[cfg(test)]
