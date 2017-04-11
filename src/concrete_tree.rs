@@ -151,10 +151,6 @@ fn parse_value_expr <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
 
                 if let Some(close_paren_token) = parse_optional_token(lexer, SqlType::CloseParen) {
                     children.push(ParseTree::new_leaf(close_paren_token));
-                } else if let Some(star_token) = parse_optional_token(lexer, SqlType::Star) {
-                    children.push(ParseTree::new_leaf(star_token));
-                    let close_paren_token = try!(parse_token(lexer, SqlType::CloseParen));
-                    children.push(ParseTree::new_leaf(close_paren_token));
                 } else {
                     let delimiter_types = vec![SqlType::Separator, SqlType::CloseParen];
 
@@ -715,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_select_function() {
-        let parse_tree = parse(SqlTokenizer::new(&"select \"my age\", count(*) as num_people from people group by age having count(*) > 3 order by age desc limit 1 offset 2")).unwrap();
+        let parse_tree = parse(SqlTokenizer::new(&"select \"my age\", count(*) as num_people from people group by name having max(age) > 3 order by age desc limit 1 offset 2")).unwrap();
         // 0 query
         //   0 selection
         //     0 select
@@ -727,7 +723,8 @@ mod tests {
         //       0 field_value_function
         //         0 count
         //         1 (
-        //         2 *
+        //         2 field_value_star
+        //           0 *
         //         3 )
         //       1 as
         //       2 num_people
@@ -743,9 +740,10 @@ mod tests {
         //    0 having
         //    1 expr_bool_cond
         //      0 field_value_function
-        //        0 count
+        //        0 max
         //        1 (
-        //        2 *
+        //        2 field_value_literal
+        //          0 age
         //        3 )
         //      4 >
         //      5 field_value_primitive
@@ -774,7 +772,8 @@ mod tests {
         assert_eq!(find_node_type(&parse_tree, &[0, 3, 0]), NodeType::FieldValueFunction);
         assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 0]), SqlType::Literal);
         assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 1]), SqlType::OpenParen);
-        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 2]), SqlType::Star);
+        assert_eq!(find_node_type(&parse_tree, &[0, 3, 0, 2]), NodeType::FieldValueStar);
+        assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 2, 0]), SqlType::Star);
         assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 0, 3]), SqlType::CloseParen);
         assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 1]), SqlType::As);
         assert_eq!(find_sql_type(&parse_tree,  &[0, 3, 2]), SqlType::Literal);
@@ -794,7 +793,8 @@ mod tests {
         assert_eq!(find_node_type(&parse_tree, &[3, 1, 0]), NodeType::FieldValueFunction);
         assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 0]), SqlType::Literal);
         assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 1]), SqlType::OpenParen);
-        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 2]), SqlType::Star);
+        assert_eq!(find_node_type(&parse_tree, &[3, 1, 0, 2]), NodeType::FieldValueLiteral);
+        assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 2, 0]), SqlType::Literal);
         assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 0, 3]), SqlType::CloseParen);
         assert_eq!(find_sql_type(&parse_tree,  &[3, 1, 1]), SqlType::GreaterThan);
         assert_eq!(find_node_type(&parse_tree, &[3, 1, 2]), NodeType::FieldValuePrimitive);
@@ -836,12 +836,6 @@ mod tests {
     fn test_select_value() {
         let parse_tree = parse(SqlTokenizer::new(&"select 1 as ok from people"));
         assert!(parse_tree.is_ok());
-    }
-
-    #[test]
-    fn test_select_double_star() {
-        let parse_tree = parse(SqlTokenizer::new(&"select count(*, *) from people"));
-        assert!(parse_tree.is_err());
     }
 
     #[test]

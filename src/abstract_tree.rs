@@ -5,11 +5,8 @@ use lexer::{Token, SqlType};
 use concrete_tree;
 use concrete_tree::{ParseTree, NodeType};
 
-pub struct Having {}
-
-pub struct Grouping {}
-
-pub struct Filter {}
+#[derive(PartialEq, Debug, Clone)]
+pub struct Grouping (String);
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum BoolOp {
@@ -37,7 +34,8 @@ pub enum BoolExpr {
 pub enum FieldType {
     Literal(String),
     Primitive(String),
-    Star
+    Star,
+    Function { name: String, args: Vec<FieldType>}
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -71,33 +69,41 @@ pub struct Query {
     fields: Vec<Field>,
     sources: Vec<Source>,
     filter: Option<BoolExpr>,
+    groups: Vec<Grouping>,
+    having: Option<BoolExpr>,
     limit: Limit,
     offset: i64
-}
-
-fn read_token(tree: &ParseTree) -> Token {
-    match tree.node_type {
-        NodeType::Concrete(ref token) => {
-            token.clone()
-        },
-        _ => {
-            panic!("Whatup");
-        }
-    }
 }
 
 fn parse_field_type(tree: &ParseTree) -> FieldType {
     match tree.node_type {
         NodeType::FieldValueLiteral => {
-            let field_name = read_token(&tree.children[0]).text.clone();
+            let field_name = node_token(&tree.children[0]).text.clone();
             FieldType::Literal(field_name)
         },
         NodeType::FieldValuePrimitive => {
-            let field_val = read_token(&tree.children[0]).text.clone();
+            let field_val = node_token(&tree.children[0]).text.clone();
             FieldType::Primitive(field_val)
         },
         NodeType::FieldValueStar => {
             FieldType::Star
+        },
+        NodeType::FieldValueFunction => {
+            assert_tree_sql_type(&tree.children[0], SqlType::Literal);
+            let function_name = node_token(&tree.children[0]).text.clone();
+            assert_tree_sql_type(&tree.children[1], SqlType::OpenParen);
+            assert_tree_sql_type(&tree.children.last().unwrap(), SqlType::CloseParen);
+
+            let args = tree.children.iter().skip(2).take(tree.children.len() - 3).enumerate().flat_map(|(i, child)| {
+                if i & 1 == 0 {
+                    Some(parse_field_type(child))
+                } else {
+                    assert_tree_sql_type(child, SqlType::Separator);
+                    None
+                }
+            }).collect::<Vec<FieldType>>();
+
+            FieldType::Function { name: function_name, args: args }
         },
         _ => {
             panic!("Unknown type: {:?}", tree.node_type);
@@ -109,7 +115,7 @@ fn parse_named_field_def(tree: &ParseTree) -> Field {
     match tree.node_type {
         NodeType::NamedFieldDef => {
             let field_type = parse_field_type(&tree.children[0]);
-            let column_name = read_token(&tree.children[2]).text.clone();
+            let column_name = node_token(&tree.children[2]).text.clone();
 
             Field { name: column_name, field_type: field_type }
         },
@@ -253,6 +259,43 @@ fn parse_filter(tree: &ParseTree) -> BoolExpr {
     parse_bool_expr(&tree.children[1]).1
 }
 
+fn parse_groups(tree: &ParseTree) -> Vec<Grouping> {
+    assert_node_type(tree, NodeType::Grouping);
+
+    assert_tree_sql_type(&tree.children[0], SqlType::Group);
+    assert_tree_sql_type(&tree.children[1], SqlType::By);
+
+    let mut child_iter = tree.children.iter().skip(2);
+    let mut groups = vec![];
+
+    loop {
+        match child_iter.next().unwrap().node_type {
+            NodeType::Concrete(ref token) => {
+                groups.push(Grouping(token.text.clone()));
+            },
+            _ => {
+                panic!("Waddup");
+            }
+        }
+
+        if let Some(child) = child_iter.next() {
+            assert_tree_sql_type(child, SqlType::Separator);
+        } else {
+            break;
+        }
+    }
+
+    groups
+}
+
+fn parse_having(tree: &ParseTree) -> BoolExpr {
+    assert_node_type(tree, NodeType::Having);
+
+    assert_tree_sql_type(&tree.children[0], SqlType::Having);
+    //TODO: Verify having types
+    parse_bool_expr(&tree.children[1]).1
+}
+
 fn parse_limit(tree: &ParseTree) -> Limit {
     assert_node_type(tree, NodeType::Limit);
 
@@ -319,6 +362,20 @@ pub fn parse(tree: &ParseTree) -> Query {
         None
     };
 
+    let mut groups = vec![];
+    if is_node_type(current_child, NodeType::Grouping) {
+        groups = parse_groups(current_child.unwrap());
+        current_child = child_iter.next();
+    }
+
+    let having = if is_node_type(current_child, NodeType::Having) {
+        let having = parse_having(current_child.unwrap());
+        current_child = child_iter.next();
+        Some(having)
+    } else {
+        None
+    };
+
     let limit = if is_node_type(current_child, NodeType::Limit) {
         let limit = parse_limit(current_child.unwrap());
         current_child = child_iter.next();
@@ -339,6 +396,8 @@ pub fn parse(tree: &ParseTree) -> Query {
         fields: fields,
         sources: sources,
         filter: filter,
+        groups: groups,
+        having: having,
         limit: limit,
         offset: offset
     }
@@ -426,6 +485,17 @@ mod tests {
         assert_eq!(query.filter, Some(BoolExpr::Cond{ left: FieldType::Literal("age".to_string()), bool_op: BoolOp::LessThan, right: FieldType::Primitive("5".to_string()) }));
         assert_eq!(query.limit, Limit::Amount(2));
         assert_eq!(query.offset, 1);
+    }
+
+    #[test]
+    fn test_group() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select age from people group by age having count(*) > 2")).unwrap();
+
+        let query = parse(&parse_tree);
+        assert_eq!(query.groups, vec![Grouping("age".to_string())]);
+
+        let function_call = FieldType::Function { name: "count".to_string(), args: vec![FieldType::Star] };
+        assert_eq!(query.having, Some(BoolExpr::Cond { left: function_call, bool_op: BoolOp::GreaterThan, right: FieldType::Primitive("2".to_string()) }));
     }
 
     #[test]
