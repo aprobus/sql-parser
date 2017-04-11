@@ -5,10 +5,6 @@ use lexer::{Token, SqlType};
 use concrete_tree;
 use concrete_tree::{ParseTree, NodeType};
 
-pub struct Offset {}
-
-pub struct Limit {}
-
 pub struct Having {}
 
 pub struct Grouping {}
@@ -65,10 +61,18 @@ pub enum Source {
     Query
 }
 
+#[derive(PartialEq, Debug, Clone)]
+pub enum Limit {
+    All,
+    Amount(i64)
+}
+
 pub struct Query {
     fields: Vec<Field>,
     sources: Vec<Source>,
-    filter: Option<BoolExpr>
+    filter: Option<BoolExpr>,
+    limit: Limit,
+    offset: i64
 }
 
 fn read_token(tree: &ParseTree) -> Token {
@@ -249,6 +253,49 @@ fn parse_filter(tree: &ParseTree) -> BoolExpr {
     parse_bool_expr(&tree.children[1]).1
 }
 
+fn parse_limit(tree: &ParseTree) -> Limit {
+    assert_node_type(tree, NodeType::Limit);
+
+    assert_tree_sql_type(&tree.children[0], SqlType::Limit);
+
+    let token = node_token(&tree.children[1]);
+    match token.sql_type {
+        SqlType::All => {
+            Limit::All
+        },
+        SqlType::Int => {
+            let limit = token.text.parse::<i64>().unwrap();
+            if limit < 0 {
+                panic!("Limit cannot be less than 0");
+            }
+            Limit::Amount(limit)
+        },
+        _ => {
+            panic!("Unknown limit type");
+        }
+    }
+}
+
+fn parse_offset(tree: &ParseTree) -> i64 {
+    assert_node_type(tree, NodeType::Offset);
+
+    assert_tree_sql_type(&tree.children[0], SqlType::Offset);
+
+    let token = node_token(&tree.children[1]);
+    match token.sql_type {
+        SqlType::Int => {
+            let offset = token.text.parse::<i64>().unwrap();
+            if offset < 0 {
+                panic!("Offset cannot be less than 0");
+            }
+            offset
+        },
+        _ => {
+            panic!("Unknown offset type");
+        }
+    }
+}
+
 pub fn parse(tree: &ParseTree) -> Query {
     let mut child_iter = tree.children.iter();
     let mut current_child = child_iter.next();
@@ -272,10 +319,28 @@ pub fn parse(tree: &ParseTree) -> Query {
         None
     };
 
+    let limit = if is_node_type(current_child, NodeType::Limit) {
+        let limit = parse_limit(current_child.unwrap());
+        current_child = child_iter.next();
+        limit
+    } else {
+        Limit::All
+    };
+
+    let offset = if is_node_type(current_child, NodeType::Offset) {
+        let offset = parse_offset(current_child.unwrap());
+        current_child = child_iter.next();
+        offset
+    } else {
+        0i64
+    };
+
     Query {
         fields: fields,
         sources: sources,
-        filter: filter
+        filter: filter,
+        limit: limit,
+        offset: offset
     }
 }
 
@@ -317,6 +382,17 @@ fn node_sql_type(tree: &ParseTree) -> SqlType {
     }
 }
 
+fn node_token(tree: &ParseTree) -> &Token {
+    match tree.node_type {
+        NodeType::Concrete(ref token) => {
+            token
+        },
+        _ => {
+            panic!("Waddup");
+        }
+    }
+}
+
 fn is_node_type(tree: Option<&ParseTree>, expected_type: NodeType) -> bool {
     tree.map(|ref child| child.node_type == expected_type).unwrap_or(false)
 }
@@ -338,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_query() {
-        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select age, name as person_name from people where age < 5")).unwrap();
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select age, name as person_name from people where age < 5 limit 2 offset 1")).unwrap();
 
         let query = parse(&parse_tree);
         assert_eq!(&query.fields, &vec![
@@ -348,6 +424,8 @@ mod tests {
 
         assert_eq!(&query.sources, &vec![ Source::Table("people".to_string()) ]);
         assert_eq!(query.filter, Some(BoolExpr::Cond{ left: FieldType::Literal("age".to_string()), bool_op: BoolOp::LessThan, right: FieldType::Primitive("5".to_string()) }));
+        assert_eq!(query.limit, Limit::Amount(2));
+        assert_eq!(query.offset, 1);
     }
 
     #[test]
