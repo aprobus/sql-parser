@@ -51,7 +51,7 @@ pub enum ValueExpr {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Field {
-    name: String,
+    alias: Option<String>,
     field_type: ValueExpr
 }
 
@@ -142,20 +142,12 @@ fn parse_named_field_def(tree: &ParseTree) -> Field {
             let field_type = parse_field_type(&tree.children[0]);
             let column_name = node_token(&tree.children[2]).text.clone();
 
-            Field { name: column_name, field_type: field_type }
+            Field { alias: Some(column_name), field_type: field_type }
         },
         NodeType::FieldDef => {
             let field_type = parse_field_type(&tree.children[0]);
-            let column_name = match field_type {
-                ValueExpr::Literal(ref field_name) => {
-                    field_name.clone()
-                },
-                _ => {
-                    "anon".to_string()
-                }
-            };
 
-            Field { name: column_name, field_type: field_type }
+            Field { alias: None, field_type: field_type }
         },
         _ => {
             panic!("Unknown type");
@@ -551,8 +543,8 @@ mod tests {
 
         let query = parse(&parse_tree);
         assert_eq!(&query.fields, &vec![
-                   Field{ name: "age".to_string(), field_type: ValueExpr::Literal("age".to_string()) },
-                   Field{ name: "person_name".to_string(), field_type: ValueExpr::Literal("name".to_string()) }
+                   Field{ alias: None, field_type: ValueExpr::Literal("age".to_string()) },
+                   Field{ alias: Some("person_name".to_string()), field_type: ValueExpr::Literal("name".to_string()) }
         ]);
 
         assert_eq!(&query.sources, &vec![ Source::Table("people".to_string()) ]);
@@ -585,7 +577,7 @@ mod tests {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select people.name as lolz from people")).unwrap();
 
         let query = parse(&parse_tree);
-        assert_eq!(&query.fields, &vec![ Field{ name: "lolz".to_string(), field_type: ValueExpr::ScopedLiteral("people".to_string(), "name".to_string()) }, ]);
+        assert_eq!(&query.fields, &vec![ Field{ alias: Some("lolz".to_string()), field_type: ValueExpr::ScopedLiteral("people".to_string(), "name".to_string()) }, ]);
     }
 
     #[test]
@@ -593,7 +585,7 @@ mod tests {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select people.* from people")).unwrap();
 
         let query = parse(&parse_tree);
-        assert_eq!(&query.fields, &vec![ Field{ name: "anon".to_string(), field_type: ValueExpr::ScopedStar("people".to_string()) }, ]);
+        assert_eq!(&query.fields, &vec![ Field{ alias: None, field_type: ValueExpr::ScopedStar("people".to_string()) }, ]);
     }
 
     #[test]
