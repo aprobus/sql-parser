@@ -42,7 +42,9 @@ pub enum BoolExpr {
 #[derive(PartialEq, Debug, Clone)]
 pub enum FieldType {
     Literal(String),
+    ScopedLiteral(String, String),
     Primitive(String),
+    ScopedStar(String),
     Star,
     Function { name: String, args: Vec<FieldType>}
 }
@@ -97,6 +99,19 @@ fn parse_field_type(tree: &ParseTree) -> FieldType {
         },
         NodeType::FieldValueStar => {
             FieldType::Star
+        },
+        NodeType::FieldValueScoped => {
+            assert_tree_sql_type(&tree.children[0], SqlType::Literal);
+            assert_tree_sql_type(&tree.children[1], SqlType::Dot);
+
+            let table_name = typed_node_token(&tree.children[0], SqlType::Literal).text.clone();
+
+            let column_token = node_token(&tree.children[2]);
+            match column_token.sql_type {
+                SqlType::Literal => FieldType::ScopedLiteral(table_name, column_token.text.clone()),
+                SqlType::Star => FieldType::ScopedStar(table_name),
+                _ => { panic!("Unknown scoped value: {:?}", column_token.sql_type) }
+            }
         },
         NodeType::FieldValueFunction => {
             assert_tree_sql_type(&tree.children[0], SqlType::Literal);
@@ -563,6 +578,22 @@ mod tests {
 
         let query = parse(&parse_tree);
         assert_eq!(query.orders, vec![Order("age".to_string(), Direction::Desc), Order("name".to_string(), Direction::Asc)]);
+    }
+
+    #[test]
+    fn test_scoped_field_select() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select people.name as lolz from people")).unwrap();
+
+        let query = parse(&parse_tree);
+        assert_eq!(&query.fields, &vec![ Field{ name: "lolz".to_string(), field_type: FieldType::ScopedLiteral("people".to_string(), "name".to_string()) }, ]);
+    }
+
+    #[test]
+    fn test_scoped_star_select() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select people.* from people")).unwrap();
+
+        let query = parse(&parse_tree);
+        assert_eq!(&query.fields, &vec![ Field{ name: "anon".to_string(), field_type: FieldType::ScopedStar("people".to_string()) }, ]);
     }
 
     #[test]
