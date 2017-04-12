@@ -36,23 +36,23 @@ pub enum BoolLogic {
 #[derive(PartialEq, Debug, Clone)]
 pub enum BoolExpr {
     LogicExpr { left: Box<BoolExpr>, bool_logic: BoolLogic, right: Box<BoolExpr> },
-    Cond { left: FieldType, bool_op: BoolOp, right: FieldType }
+    Cond { left: ValueExpr, bool_op: BoolOp, right: ValueExpr }
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub enum FieldType {
+pub enum ValueExpr {
     Literal(String),
     ScopedLiteral(String, String),
     Primitive(String),
     ScopedStar(String),
     Star,
-    Function { name: String, args: Vec<FieldType>}
+    Function { name: String, args: Vec<ValueExpr>}
 }
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Field {
     name: String,
-    field_type: FieldType
+    field_type: ValueExpr
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -87,18 +87,18 @@ pub struct Query {
     offset: i64,
 }
 
-fn parse_field_type(tree: &ParseTree) -> FieldType {
+fn parse_field_type(tree: &ParseTree) -> ValueExpr {
     match tree.node_type {
         NodeType::FieldValueLiteral => {
             let field_name = node_token(&tree.children[0]).text.clone();
-            FieldType::Literal(field_name)
+            ValueExpr::Literal(field_name)
         },
         NodeType::FieldValuePrimitive => {
             let field_val = node_token(&tree.children[0]).text.clone();
-            FieldType::Primitive(field_val)
+            ValueExpr::Primitive(field_val)
         },
         NodeType::FieldValueStar => {
-            FieldType::Star
+            ValueExpr::Star
         },
         NodeType::FieldValueScoped => {
             assert_tree_sql_type(&tree.children[0], SqlType::Literal);
@@ -108,8 +108,8 @@ fn parse_field_type(tree: &ParseTree) -> FieldType {
 
             let column_token = node_token(&tree.children[2]);
             match column_token.sql_type {
-                SqlType::Literal => FieldType::ScopedLiteral(table_name, column_token.text.clone()),
-                SqlType::Star => FieldType::ScopedStar(table_name),
+                SqlType::Literal => ValueExpr::ScopedLiteral(table_name, column_token.text.clone()),
+                SqlType::Star => ValueExpr::ScopedStar(table_name),
                 _ => { panic!("Unknown scoped value: {:?}", column_token.sql_type) }
             }
         },
@@ -126,9 +126,9 @@ fn parse_field_type(tree: &ParseTree) -> FieldType {
                     assert_tree_sql_type(child, SqlType::Separator);
                     None
                 }
-            }).collect::<Vec<FieldType>>();
+            }).collect::<Vec<ValueExpr>>();
 
-            FieldType::Function { name: function_name, args: args }
+            ValueExpr::Function { name: function_name, args: args }
         },
         _ => {
             panic!("Unknown type: {:?}", tree.node_type);
@@ -147,7 +147,7 @@ fn parse_named_field_def(tree: &ParseTree) -> Field {
         NodeType::FieldDef => {
             let field_type = parse_field_type(&tree.children[0]);
             let column_name = match field_type {
-                FieldType::Literal(ref field_name) => {
+                ValueExpr::Literal(ref field_name) => {
                     field_name.clone()
                 },
                 _ => {
@@ -551,12 +551,12 @@ mod tests {
 
         let query = parse(&parse_tree);
         assert_eq!(&query.fields, &vec![
-                   Field{ name: "age".to_string(), field_type: FieldType::Literal("age".to_string()) },
-                   Field{ name: "person_name".to_string(), field_type: FieldType::Literal("name".to_string()) }
+                   Field{ name: "age".to_string(), field_type: ValueExpr::Literal("age".to_string()) },
+                   Field{ name: "person_name".to_string(), field_type: ValueExpr::Literal("name".to_string()) }
         ]);
 
         assert_eq!(&query.sources, &vec![ Source::Table("people".to_string()) ]);
-        assert_eq!(query.filter, Some(BoolExpr::Cond{ left: FieldType::Literal("age".to_string()), bool_op: BoolOp::LessThan, right: FieldType::Primitive("5".to_string()) }));
+        assert_eq!(query.filter, Some(BoolExpr::Cond{ left: ValueExpr::Literal("age".to_string()), bool_op: BoolOp::LessThan, right: ValueExpr::Primitive("5".to_string()) }));
         assert_eq!(query.limit, Limit::Amount(2));
         assert_eq!(query.offset, 1);
     }
@@ -568,8 +568,8 @@ mod tests {
         let query = parse(&parse_tree);
         assert_eq!(query.groups, vec![Grouping("age".to_string())]);
 
-        let function_call = FieldType::Function { name: "count".to_string(), args: vec![FieldType::Star] };
-        assert_eq!(query.having, Some(BoolExpr::Cond { left: function_call, bool_op: BoolOp::GreaterThan, right: FieldType::Primitive("2".to_string()) }));
+        let function_call = ValueExpr::Function { name: "count".to_string(), args: vec![ValueExpr::Star] };
+        assert_eq!(query.having, Some(BoolExpr::Cond { left: function_call, bool_op: BoolOp::GreaterThan, right: ValueExpr::Primitive("2".to_string()) }));
     }
 
     #[test]
@@ -585,7 +585,7 @@ mod tests {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select people.name as lolz from people")).unwrap();
 
         let query = parse(&parse_tree);
-        assert_eq!(&query.fields, &vec![ Field{ name: "lolz".to_string(), field_type: FieldType::ScopedLiteral("people".to_string(), "name".to_string()) }, ]);
+        assert_eq!(&query.fields, &vec![ Field{ name: "lolz".to_string(), field_type: ValueExpr::ScopedLiteral("people".to_string(), "name".to_string()) }, ]);
     }
 
     #[test]
@@ -593,7 +593,7 @@ mod tests {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select people.* from people")).unwrap();
 
         let query = parse(&parse_tree);
-        assert_eq!(&query.fields, &vec![ Field{ name: "anon".to_string(), field_type: FieldType::ScopedStar("people".to_string()) }, ]);
+        assert_eq!(&query.fields, &vec![ Field{ name: "anon".to_string(), field_type: ValueExpr::ScopedStar("people".to_string()) }, ]);
     }
 
     #[test]
@@ -603,33 +603,33 @@ mod tests {
         let query = parse(&parse_tree);
 
         let cond_1 = BoolExpr::Cond {
-            left: FieldType::Literal("age".to_string()),
+            left: ValueExpr::Literal("age".to_string()),
             bool_op: BoolOp::GreaterThan,
-            right: FieldType::Primitive("1".to_string())
+            right: ValueExpr::Primitive("1".to_string())
         };
 
         let cond_2 = BoolExpr::Cond {
-            left: FieldType::Literal("age".to_string()),
+            left: ValueExpr::Literal("age".to_string()),
             bool_op: BoolOp::GreaterThan,
-            right: FieldType::Primitive("2".to_string())
+            right: ValueExpr::Primitive("2".to_string())
         };
 
         let cond_3 = BoolExpr::Cond {
-            left: FieldType::Literal("age".to_string()),
+            left: ValueExpr::Literal("age".to_string()),
             bool_op: BoolOp::GreaterThan,
-            right: FieldType::Primitive("3".to_string())
+            right: ValueExpr::Primitive("3".to_string())
         };
 
         let cond_4 = BoolExpr::Cond {
-            left: FieldType::Literal("age".to_string()),
+            left: ValueExpr::Literal("age".to_string()),
             bool_op: BoolOp::GreaterThan,
-            right: FieldType::Primitive("4".to_string())
+            right: ValueExpr::Primitive("4".to_string())
         };
 
         let cond_5 = BoolExpr::Cond {
-            left: FieldType::Literal("age".to_string()),
+            left: ValueExpr::Literal("age".to_string()),
             bool_op: BoolOp::GreaterThan,
-            right: FieldType::Primitive("5".to_string())
+            right: ValueExpr::Primitive("5".to_string())
         };
 
         let where_clause = BoolExpr::LogicExpr {
