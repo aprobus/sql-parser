@@ -6,6 +6,15 @@ use concrete_tree;
 use concrete_tree::{ParseTree, NodeType};
 
 #[derive(PartialEq, Debug, Clone)]
+pub enum Direction {
+    Asc,
+    Desc
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Order (String, Direction);
+
+#[derive(PartialEq, Debug, Clone)]
 pub struct Grouping (String);
 
 #[derive(PartialEq, Debug, Clone)]
@@ -71,8 +80,9 @@ pub struct Query {
     filter: Option<BoolExpr>,
     groups: Vec<Grouping>,
     having: Option<BoolExpr>,
+    orders: Vec<Order>,
     limit: Limit,
-    offset: i64
+    offset: i64,
 }
 
 fn parse_field_type(tree: &ParseTree) -> FieldType {
@@ -296,6 +306,37 @@ fn parse_having(tree: &ParseTree) -> BoolExpr {
     parse_bool_expr(&tree.children[1]).1
 }
 
+fn parse_order(tree: &ParseTree) -> Vec<Order> {
+    assert_node_type(tree, NodeType::Sort);
+
+    assert_tree_sql_type(&tree.children[0], SqlType::Order);
+    assert_tree_sql_type(&tree.children[1], SqlType::By);
+
+    tree.children.iter().skip(2).enumerate().filter_map(|(i, child)| {
+        if i & 1 == 0 {
+            assert_node_type(child, NodeType::SortField);
+
+            let field_name = typed_node_token(&child.children[0], SqlType::Literal).text.clone();
+
+            let dir = if let Some(dir_tree) = child.children.get(1) {
+                let dir_type = node_sql_type(dir_tree);
+                match dir_type {
+                    SqlType::Asc => Direction::Asc,
+                    SqlType::Desc => Direction::Desc,
+                    _ => { panic!("Unexpected sql type: {:?}", dir_type) }
+                }
+            } else {
+                Direction::Asc
+            };
+
+            Some(Order(field_name, dir))
+        } else {
+            assert_tree_sql_type(&child, SqlType::Separator);
+            None
+        }
+    }).collect::<Vec<Order>>()
+}
+
 fn parse_limit(tree: &ParseTree) -> Limit {
     assert_node_type(tree, NodeType::Limit);
 
@@ -376,6 +417,14 @@ pub fn parse(tree: &ParseTree) -> Query {
         None
     };
 
+    let orders = if is_node_type(current_child, NodeType::Sort) {
+        let orders = parse_order(current_child.unwrap());
+        current_child = child_iter.next();
+        orders
+    } else {
+        vec![]
+    };
+
     let limit = if is_node_type(current_child, NodeType::Limit) {
         let limit = parse_limit(current_child.unwrap());
         current_child = child_iter.next();
@@ -398,6 +447,7 @@ pub fn parse(tree: &ParseTree) -> Query {
         filter: filter,
         groups: groups,
         having: having,
+        orders: orders,
         limit: limit,
         offset: offset
     }
@@ -447,8 +497,17 @@ fn node_token(tree: &ParseTree) -> &Token {
             token
         },
         _ => {
-            panic!("Waddup");
+            panic!("Expected Concrete, found {:?}", tree.node_type);
         }
+    }
+}
+
+fn typed_node_token(tree: &ParseTree, sql_type: SqlType) -> &Token {
+    let token = node_token(tree);
+    if token.sql_type == sql_type {
+        token
+    } else {
+        panic!("Expected {:?}, received {:?}", sql_type, token.sql_type);
     }
 }
 
@@ -496,6 +555,14 @@ mod tests {
 
         let function_call = FieldType::Function { name: "count".to_string(), args: vec![FieldType::Star] };
         assert_eq!(query.having, Some(BoolExpr::Cond { left: function_call, bool_op: BoolOp::GreaterThan, right: FieldType::Primitive("2".to_string()) }));
+    }
+
+    #[test]
+    fn test_orders() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select * from people order by age desc, name")).unwrap();
+
+        let query = parse(&parse_tree);
+        assert_eq!(query.orders, vec![Order("age".to_string(), Direction::Desc), Order("name".to_string(), Direction::Asc)]);
     }
 
     #[test]

@@ -26,6 +26,8 @@ pub enum NodeType {
     ParenGroup,
     JoinType,
 
+    SortField,
+
     Query,
     Subquery,
     Selection,
@@ -543,7 +545,7 @@ fn parse_order_field <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr
         children.push(ParseTree::new_leaf(desc_token));
     }
 
-    Ok(ParseTree { node_type: NodeType::Sort, children: children})
+    Ok(ParseTree { node_type: NodeType::SortField, children: children})
 }
 
 fn parse_order <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr>
@@ -803,7 +805,9 @@ mod tests {
         assert_eq!(find_node_type(&parse_tree, &[4]), NodeType::Sort);
         assert_eq!(find_sql_type(&parse_tree,  &[4, 0]), SqlType::Order);
         assert_eq!(find_sql_type(&parse_tree,  &[4, 1]), SqlType::By);
+        assert_eq!(find_node_type(&parse_tree, &[4, 2]), NodeType::SortField);
         assert_eq!(find_sql_type(&parse_tree,  &[4, 2, 0]), SqlType::Literal);
+        assert_eq!(find_sql_type(&parse_tree,  &[4, 2, 1]), SqlType::Desc);
 
         assert_eq!(find_node_type(&parse_tree, &[5]), NodeType::Limit);
         assert_eq!(find_sql_type(&parse_tree,  &[5, 0]), SqlType::Limit);
