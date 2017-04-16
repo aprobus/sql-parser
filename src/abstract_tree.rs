@@ -40,13 +40,22 @@ pub enum BoolExpr {
 }
 
 #[derive(PartialEq, Debug, Clone)]
+pub enum MathOp {
+    Add,
+    Subtract,
+    Divide,
+    Multiply
+}
+
+#[derive(PartialEq, Debug, Clone)]
 pub enum ValueExpr {
     Literal(String),
     ScopedLiteral(String, String),
     Primitive(String),
     ScopedStar(String),
     Star,
-    Function { name: String, args: Vec<ValueExpr>}
+    Function { name: String, args: Vec<ValueExpr>},
+    Math(MathOp, Box<ValueExpr>, Box<ValueExpr>)
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -87,6 +96,25 @@ pub struct Query {
     offset: i64,
 }
 
+fn parse_math_op(tree: &ParseTree) -> MathOp {
+    match node_sql_type(&tree) {
+        SqlType::Star => MathOp::Multiply,
+        SqlType::Plus => MathOp::Add,
+        SqlType::Minus => MathOp::Subtract,
+        SqlType::Divide => MathOp::Divide,
+        _ => { panic!("Unknown math op") }
+    }
+}
+
+fn op_rank(math_op: &MathOp) -> u8 {
+    match *math_op {
+        MathOp::Multiply => 0,
+        MathOp::Divide => 1,
+        MathOp::Add => 2,
+        MathOp::Subtract => 3
+    }
+}
+
 fn parse_field_type(tree: &ParseTree) -> ValueExpr {
     match tree.node_type {
         NodeType::FieldValueLiteral => {
@@ -112,6 +140,41 @@ fn parse_field_type(tree: &ParseTree) -> ValueExpr {
                 SqlType::Star => ValueExpr::ScopedStar(table_name),
                 _ => { panic!("Unknown scoped value: {:?}", column_token.sql_type) }
             }
+        },
+        NodeType::FieldValueMath => {
+            let mut value_exprs = vec![parse_field_type(&tree.children[0])];
+            let mut math_ops = vec![parse_math_op(&tree.children[1])];
+
+            let mut right_child = &tree.children[2];
+            while right_child.node_type == NodeType::FieldValueMath {
+                value_exprs.push(parse_field_type(&right_child.children[0]));
+                math_ops.push(parse_math_op(&right_child.children[1]));
+                right_child = &right_child.children[2];
+            }
+
+            value_exprs.push(parse_field_type(right_child));
+
+            //TODO: Inefficient!
+            // 1. Finding min op every iteration
+            // 2. Multiple shifts per combination
+            while value_exprs.len() > 1 {
+                let (i, _) = math_ops.iter().map(|op| op_rank(op)).enumerate().min_by_key(|&(i, op)| op).unwrap();
+
+                let op = math_ops.remove(i);
+                let left = value_exprs.remove(i);
+                let right = value_exprs.remove(i);
+
+                value_exprs.insert(i, ValueExpr::Math(op, Box::new(left), Box::new(right)));
+            }
+
+            value_exprs.remove(0)
+        },
+        NodeType::FieldValueParenGroup => {
+            assert_tree_sql_type(&tree.children[0], SqlType::OpenParen);
+            let child_expr = parse_field_type(&tree.children[1]);
+            assert_tree_sql_type(&tree.children[2], SqlType::CloseParen);
+
+            child_expr
         },
         NodeType::FieldValueFunction => {
             assert_tree_sql_type(&tree.children[0], SqlType::Literal);
@@ -643,5 +706,33 @@ mod tests {
         };
 
         assert_eq!(query.filter, Some(where_clause));
+    }
+
+    #[test]
+    fn test_query_math_precedence() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select 1 * 2 - 3 / 4 * (5 + 6)")).unwrap();
+
+        let query = parse(&parse_tree);
+
+        let mult_1_2 = ValueExpr::Math(MathOp::Multiply, Box::new(ValueExpr::Primitive("1".to_string())), Box::new(ValueExpr::Primitive("2".to_string())));
+        let add_5_6 = ValueExpr::Math(MathOp::Add, Box::new(ValueExpr::Primitive("5".to_string())), Box::new(ValueExpr::Primitive("6".to_string())));
+        let mult_4 = ValueExpr::Math(MathOp::Multiply, Box::new(ValueExpr::Primitive("4".to_string())), Box::new(add_5_6));
+        let div_3 = ValueExpr::Math(MathOp::Divide, Box::new(ValueExpr::Primitive("3".to_string())), Box::new(mult_4));
+        let sub = ValueExpr::Math(MathOp::Subtract, Box::new(mult_1_2), Box::new(div_3));
+
+        assert_eq!(query.fields, vec![Field { alias: None, field_type: sub }]);
+    }
+
+    #[test]
+    fn test_query_math_func() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select 2 * count(*) + 1")).unwrap();
+
+        let query = parse(&parse_tree);
+
+        let func = ValueExpr::Function{ name: "count".to_string(), args: vec![ValueExpr::Star] };
+        let mult = ValueExpr::Math(MathOp::Multiply, Box::new(ValueExpr::Primitive("2".to_string())), Box::new(func));
+        let add = ValueExpr::Math(MathOp::Add, Box::new(mult), Box::new(ValueExpr::Primitive("1".to_string())));
+
+        assert_eq!(query.fields, vec![Field { alias: None, field_type: add }]);
     }
 }
