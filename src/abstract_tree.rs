@@ -1,8 +1,6 @@
 use std::iter::Iterator;
-use std::iter::Peekable;
 
 use lexer::{Token, SqlType};
-use concrete_tree;
 use concrete_tree::{ParseTree, NodeType};
 
 #[derive(PartialEq, Debug, Clone)]
@@ -86,14 +84,14 @@ pub enum Limit {
 }
 
 pub struct Query {
-    fields: Vec<Field>,
-    sources: Vec<Source>,
-    filter: Option<BoolExpr>,
-    groups: Vec<Grouping>,
-    having: Option<BoolExpr>,
-    orders: Vec<Order>,
-    limit: Limit,
-    offset: i64,
+    pub fields: Vec<Field>,
+    pub sources: Vec<Source>,
+    pub filter: Option<BoolExpr>,
+    pub groups: Vec<Grouping>,
+    pub having: Option<BoolExpr>,
+    pub orders: Vec<Order>,
+    pub limit: Limit,
+    pub offset: i64,
 }
 
 fn parse_math_op(tree: &ParseTree) -> MathOp {
@@ -158,7 +156,7 @@ fn parse_field_type(tree: &ParseTree) -> ValueExpr {
             // 1. Finding min op every iteration
             // 2. Multiple shifts per combination
             while value_exprs.len() > 1 {
-                let (i, _) = math_ops.iter().map(|op| op_rank(op)).enumerate().min_by_key(|&(i, op)| op).unwrap();
+                let (i, _) = math_ops.iter().map(|op| op_rank(op)).enumerate().min_by_key(|&(_, op)| op).unwrap();
 
                 let op = math_ops.remove(i);
                 let left = value_exprs.remove(i);
@@ -505,7 +503,6 @@ pub fn parse(tree: &ParseTree) -> Query {
 
     let offset = if is_node_type(current_child, NodeType::Offset) {
         let offset = parse_offset(current_child.unwrap());
-        current_child = child_iter.next();
         offset
     } else {
         0i64
@@ -583,15 +580,6 @@ fn typed_node_token(tree: &ParseTree, sql_type: SqlType) -> &Token {
 
 fn is_node_type(tree: Option<&ParseTree>, expected_type: NodeType) -> bool {
     tree.map(|ref child| child.node_type == expected_type).unwrap_or(false)
-}
-
-fn is_sql_type(tree: &ParseTree, expected_type: SqlType) -> bool {
-    match tree.node_type {
-        NodeType::Concrete(ref token) => {
-            token.sql_type == expected_type
-        },
-        _ => false
-    }
 }
 
 #[cfg(test)]
