@@ -44,17 +44,12 @@ pub enum NodeType {
 
 #[derive(Debug, Clone)]
 pub struct ParseErr {
-    pub invalid_token: Option<Token>,
-    pub sql_types: Vec<SqlType>
+    pub token: Option<Token>
 }
 
 impl ParseErr {
-    fn new(token: Option<Token>, sql_type: SqlType) -> ParseErr {
-        ParseErr { invalid_token: token, sql_types: vec![sql_type] }
-    }
-
-    fn new_multi(token: Option<Token>, sql_types: Vec<SqlType>) -> ParseErr {
-        ParseErr { invalid_token: token, sql_types: sql_types }
+    fn new(token: Option<Token>) -> ParseErr {
+        ParseErr { token: token }
     }
 }
 
@@ -83,10 +78,10 @@ fn parse_token <T> (lexer: &mut Peekable<T>, sql_type: SqlType) -> Result<Token,
         if token.sql_type == sql_type {
             Ok(token)
         } else {
-            Err(ParseErr::new(Some(token), sql_type))
+            Err(ParseErr::new(Some(token)))
         }
     } else {
-        Err(ParseErr::new(None, sql_type))
+        Err(ParseErr::new(None))
     }
 }
 
@@ -96,10 +91,10 @@ fn parse_any_token <T> (lexer: &mut Peekable<T>, sql_types: &Vec<SqlType>) -> Re
         if sql_types.iter().any(|sql_type| &token.sql_type == sql_type) {
             Ok(token)
         } else {
-            Err(ParseErr::new_multi(Some(token), sql_types.clone()))
+            Err(ParseErr::new(Some(token)))
         }
     } else {
-        Err(ParseErr::new_multi(None, sql_types.clone()))
+        Err(ParseErr::new(None))
     }
 }
 
@@ -323,7 +318,7 @@ fn parse_from_paren_group <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, Par
             }
         }
     } else {
-        return Err(ParseErr::new(None, SqlType::Select));
+        return Err(ParseErr::new(None));
     };
 
     let close_token = try!(parse_token(lexer, SqlType::CloseParen));
@@ -358,7 +353,7 @@ fn parse_from_source <T> (lexer: &mut Peekable<T>) -> Result<ParseTree, ParseErr
             }
         }
     } else {
-        return Err(ParseErr::new(None, SqlType::Select));
+        return Err(ParseErr::new(None));
     };
 
     while let Some(parse_join_result) = parse_from_join_type(lexer) {
@@ -610,7 +605,7 @@ pub fn parse <T> (lexer: T) -> Result<ParseTree, ParseErr>
     let tree = try!(parse_query(&mut peekable_lexer));
 
     if let Some(next_token) = peekable_lexer.next() {
-        Err(ParseErr { invalid_token: Some(next_token), sql_types: vec![] })
+        Err(ParseErr::new(Some(next_token)))
     } else {
         Ok(tree)
     }
