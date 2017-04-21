@@ -217,17 +217,10 @@ fn parse_named_field_def(tree: &ParseTree) -> Result<Field, ParseErr> {
 fn parse_selection(tree: &ParseTree) -> Result<Vec<Field>, ParseErr> {
     assert_node_type(tree, NodeType::Selection);
 
-    //TODO: Strict validation?
-    tree.children.iter().filter_map(|child| {
-        match child.node_type {
-            NodeType::FieldDef | NodeType::NamedFieldDef => {
-                Some(parse_named_field_def(&child))
-            },
-            _ => {
-                None
-            }
-        }
-    }).collect::<Result<Vec<Field>, ParseErr>>()
+    let mut child_iter = tree.children.iter();
+    assert_opt_tree_sql_type(child_iter.next(), SqlType::Select);
+
+    parse_separated_list(&mut child_iter, |_, child| parse_named_field_def(&child) )
 }
 
 fn parse_join_type(tree: &ParseTree) -> Result<JoinType, ParseErr> {
