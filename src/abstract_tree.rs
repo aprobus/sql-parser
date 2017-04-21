@@ -140,7 +140,7 @@ fn parse_field_type(tree: &ParseTree, allow_star: bool) -> Result<ValueExpr, Par
             match column_token.sql_type {
                 SqlType::Literal => Ok(ValueExpr::ScopedLiteral(table_name, column_token.text.clone())),
                 SqlType::Star => Ok(ValueExpr::ScopedStar(table_name)),
-                _ => { panic!("Unknown scoped value: {:?}", column_token.sql_type) }
+                _ => { Err(ParseErr{ token: Some(column_token.clone()) }) }
             }
         },
         NodeType::FieldValueMath => {
@@ -196,7 +196,7 @@ fn parse_field_type(tree: &ParseTree, allow_star: bool) -> Result<ValueExpr, Par
             args.map(|args| ValueExpr::Function { name: function_name, args: args })
         },
         _ => {
-            panic!("Unknown type: {:?}", tree.node_type);
+            Err(ParseErr{ token: find_first_token(tree).map(|token| token.clone()) })
         }
     }
 }
@@ -215,7 +215,7 @@ fn parse_named_field_def(tree: &ParseTree) -> Result<Field, ParseErr> {
             Ok(Field { alias: None, field_type: field_type })
         },
         _ => {
-            panic!("Unknown type");
+            Err(ParseErr { token: find_first_token(tree).map(|token| token.clone()) })
         }
     }
 }
@@ -274,7 +274,7 @@ fn parse_bool_expr(tree: &ParseTree) -> Result<(NodeType, BoolExpr), ParseErr> {
                 SqlType::And => BoolLogic::And,
                 SqlType::Or => BoolLogic::Or,
                 _ => {
-                    panic!("Waddup");
+                    return Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
                 }
             };
 
@@ -315,7 +315,7 @@ fn parse_bool_expr(tree: &ParseTree) -> Result<(NodeType, BoolExpr), ParseErr> {
                 SqlType::LessThan => BoolOp::LessThan,
                 SqlType::LessThanEqual => BoolOp::LessThanEqual,
                 _ => {
-                    panic!("Waddup");
+                    return Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) });
                 }
             };
             let right_value = try!(parse_field_type(&tree.children[2], true));
@@ -329,7 +329,7 @@ fn parse_bool_expr(tree: &ParseTree) -> Result<(NodeType, BoolExpr), ParseErr> {
             Ok((NodeType::ExprParenGroup, sub_expr))
         },
         _ => {
-            panic!("Waddup");
+            Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
         }
     }
 }
@@ -411,10 +411,11 @@ fn parse_limit(tree: &ParseTree) -> Result<Limit, ParseErr> {
         },
         SqlType::Int => {
             let limit = token.text.parse::<i64>().unwrap();
-            if limit < 0 {
-                panic!("Limit cannot be less than 0");
+            if limit >= 0 {
+                Ok(Limit::Amount(limit))
+            } else {
+                Err(ParseErr { token: Some(token.clone()) })
             }
-            Ok(Limit::Amount(limit))
         },
         _ => {
             Err(ParseErr { token: Some(token.clone()) })
@@ -513,6 +514,21 @@ pub fn parse(tree: &ParseTree) -> Result<Query, ParseErr> {
         limit: limit,
         offset: offset
     })
+}
+
+fn find_first_token(tree: &ParseTree) -> Option<&Token> {
+    let mut current_tree_opt = Some(tree);
+
+    while let Some(current_tree) = current_tree_opt {
+        match current_tree.node_type {
+            NodeType::Concrete(ref token) => { return Some(token) },
+            _ => {
+                current_tree_opt = current_tree.children.get(0);
+            }
+        }
+    }
+
+    None
 }
 
 fn assert_node_type(tree: &ParseTree, expected_type: NodeType) {
