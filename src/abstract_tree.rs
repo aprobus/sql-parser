@@ -184,14 +184,7 @@ fn parse_field_type(tree: &ParseTree, allow_star: bool) -> Result<ValueExpr, Par
             assert_tree_sql_type(&tree.children[1], SqlType::OpenParen);
             assert_tree_sql_type(&tree.children.last().unwrap(), SqlType::CloseParen);
 
-            let args = tree.children.iter().skip(2).take(tree.children.len() - 3).enumerate().filter_map(|(i, child)| {
-                if i & 1 == 0 {
-                    Some(parse_field_type(child, i == 0))
-                } else {
-                    assert_tree_sql_type(child, SqlType::Separator);
-                    None
-                }
-            }).collect::<Result<Vec<ValueExpr>, ParseErr>>();
+            let args = parse_separated_list(&mut tree.children.iter().skip(2).take(tree.children.len() - 3), |i, child| parse_field_type(child, i == 0));
 
             args.map(|args| ValueExpr::Function { name: function_name, args: args })
         },
@@ -255,14 +248,7 @@ fn parse_sources(tree: &ParseTree) -> Result<Vec<Source>, ParseErr> {
     let mut child_iter = tree.children.iter();
     assert_opt_tree_sql_type(child_iter.next(), SqlType::From);
 
-    child_iter.enumerate().filter_map(|(i, child)| {
-        if i & 1 == 0 {
-            Some(parse_source(&child))
-        } else {
-            assert_tree_sql_type(child, SqlType::Separator);
-            None
-        }
-    }).collect::<Result<Vec<Source>, ParseErr>>()
+    parse_separated_list(&mut child_iter, |_, child| parse_source(child))
 }
 
 fn parse_bool_expr(tree: &ParseTree) -> Result<(NodeType, BoolExpr), ParseErr> {
@@ -344,18 +330,14 @@ fn parse_filter(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
 fn parse_groups(tree: &ParseTree) -> Result<Vec<Grouping>, ParseErr> {
     assert_node_type(tree, NodeType::Grouping);
 
-    assert_tree_sql_type(&tree.children[0], SqlType::Group);
-    assert_tree_sql_type(&tree.children[1], SqlType::By);
+    let mut child_iter = tree.children.iter();
+    assert_opt_tree_sql_type(child_iter.next(), SqlType::Group);
+    assert_opt_tree_sql_type(child_iter.next(), SqlType::By);
 
-    tree.children.iter().skip(2).enumerate().filter_map(|(i, child)| {
-        if i & 1 == 0 {
-            let group_token = node_token(child);
-            Some(Ok(Grouping(group_token.text.clone())))
-        } else {
-            assert_tree_sql_type(&child, SqlType::Separator);
-            None
-        }
-    }).collect::<Result<Vec<Grouping>, ParseErr>>()
+    parse_separated_list(&mut child_iter, |_, child| {
+        let group_token = node_token(child);
+        Ok(Grouping(group_token.text.clone()))
+    })
 }
 
 fn parse_having(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
@@ -370,33 +352,28 @@ fn parse_having(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
 fn parse_order(tree: &ParseTree) -> Result<Vec<Order>, ParseErr> {
     assert_node_type(tree, NodeType::Sort);
 
-    assert_tree_sql_type(&tree.children[0], SqlType::Order);
-    assert_tree_sql_type(&tree.children[1], SqlType::By);
+    let mut child_iter = tree.children.iter();
+    assert_opt_tree_sql_type(child_iter.next(), SqlType::Order);
+    assert_opt_tree_sql_type(child_iter.next(), SqlType::By);
 
-    tree.children.iter().skip(2).enumerate().filter_map(|(i, child)| {
-        if i & 1 == 0 {
-            assert_node_type(child, NodeType::SortField);
+    parse_separated_list(&mut child_iter, |_, child| {
+        assert_node_type(child, NodeType::SortField);
 
-            let field_name = typed_node_token(&child.children[0], SqlType::Literal).text.clone();
+        let field_name = typed_node_token(&child.children[0], SqlType::Literal).text.clone();
 
-            let dir = if let Some(dir_tree) = child.children.get(1) {
-                let dir_token = node_token(&dir_tree);
-                //let dir_type = node_sql_type(dir_tree);
-                match dir_token.sql_type {
-                    SqlType::Asc => Direction::Asc,
-                    SqlType::Desc => Direction::Desc,
-                    _ => { return Some(Err(ParseErr { token: Some(dir_token.clone()) })) }
-                }
-            } else {
-                Direction::Asc
-            };
-
-            Some(Ok(Order(field_name, dir)))
+        let dir = if let Some(dir_tree) = child.children.get(1) {
+            let dir_token = node_token(&dir_tree);
+            match dir_token.sql_type {
+                SqlType::Asc => Direction::Asc,
+                SqlType::Desc => Direction::Desc,
+                _ => { return Err(ParseErr { token: Some(dir_token.clone()) }) }
+            }
         } else {
-            assert_tree_sql_type(&child, SqlType::Separator);
-            None
-        }
-    }).collect::<Result<Vec<Order>, ParseErr>>()
+            Direction::Asc
+        };
+
+        Ok(Order(field_name, dir))
+    })
 }
 
 fn parse_limit(tree: &ParseTree) -> Result<Limit, ParseErr> {
@@ -591,6 +568,39 @@ fn typed_node_token(tree: &ParseTree, sql_type: SqlType) -> &Token {
 
 fn is_node_type(tree: Option<&ParseTree>, expected_type: NodeType) -> bool {
     tree.map(|ref child| child.node_type == expected_type).unwrap_or(false)
+}
+
+fn parse_separated_list <'a, I, F, T> (iter: &mut I, parse_fn: F) -> Result<Vec<T>, ParseErr>
+    where I: Iterator<Item = &'a ParseTree>, F: Fn(usize, &ParseTree) -> Result<T, ParseErr> {
+    let mut count = 0;
+
+    let mut last_tree_opt = None;
+
+    let parsed_list = iter.enumerate().filter_map(|(i, child)| {
+        count += 1;
+        last_tree_opt = Some(child);
+
+        if i & 1 == 0 {
+            Some(parse_fn(i, child))
+        } else {
+            assert_tree_sql_type(child, SqlType::Separator);
+            None
+        }
+    }).collect::<Result<Vec<T>, ParseErr>>();
+
+    if count == 0 {
+        // Empty
+        Err(ParseErr{ token: None })
+    } else if count & 1 == 1 {
+        parsed_list
+    } else {
+        // Dangling separator
+        if let Some(last_tree) = last_tree_opt {
+            Err(ParseErr{ token: find_first_token(last_tree).map(|token| token.clone()) })
+        } else {
+            Err(ParseErr{ token: None })
+        }
+    }
 }
 
 #[cfg(test)]
