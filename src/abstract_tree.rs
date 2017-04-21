@@ -73,8 +73,8 @@ pub enum JoinType {
 #[derive(PartialEq, Debug, Clone)]
 pub enum Source {
     Table(String),
-    Join { left: Box<Source>, right: Box<Source>, join_type: JoinType },
-    Query
+    Join { join_type: JoinType, left: Box<Source>, right: Box<Source>, cond: BoolExpr },
+    Query(Query)
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -83,6 +83,7 @@ pub enum Limit {
     Amount(i64)
 }
 
+#[derive(PartialEq, Debug, Clone)]
 pub struct Query {
     pub fields: Vec<Field>,
     pub sources: Vec<Source>,
@@ -229,15 +230,54 @@ fn parse_selection(tree: &ParseTree) -> Result<Vec<Field>, ParseErr> {
     }).collect::<Result<Vec<Field>, ParseErr>>()
 }
 
-fn parse_source(tree: &ParseTree) -> Result<Source, ParseErr> {
-    assert_node_type(tree, NodeType::SourceTable);
+fn parse_join_type(tree: &ParseTree) -> Result<JoinType, ParseErr> {
+    assert_node_type(tree, NodeType::JoinType);
 
-    match tree.children[0].node_type {
-        NodeType::Concrete(ref token) => {
-            Ok(Source::Table(token.text.clone()))
+    let first_token = node_token(&tree.children[0]);
+    match first_token.sql_type {
+        SqlType::Join | SqlType::Inner => Ok(JoinType::Inner),
+        SqlType::Left => Ok(JoinType::Left),
+        SqlType::Right => Ok(JoinType::Right),
+        SqlType::Full => Ok(JoinType::Full),
+        _ => { Err(ParseErr { token: Some(first_token.clone()) }) }
+    }
+}
+
+fn parse_source(tree: &ParseTree) -> Result<Source, ParseErr> {
+    match tree.node_type {
+        NodeType::SourceTable => {
+            let table_name_token = node_token(&tree.children[0]);
+            Ok(Source::Table(table_name_token.text.clone()))
+        },
+        NodeType::ParenGroup => {
+            assert_tree_sql_type(&tree.children[0], SqlType::OpenParen);
+            let subquery = try!(parse_source(&tree.children[1]));
+            assert_tree_sql_type(&tree.children[2], SqlType::CloseParen);
+
+            match subquery {
+                Source::Table(_) => {
+                    Err(ParseErr { token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
+                },
+                _ => {
+                    Ok(subquery)
+                }
+            }
+        },
+        NodeType::SourceJoin => {
+            let left = try!(parse_source(&tree.children[0]));
+            let join = try!(parse_join_type(&tree.children[1]));
+            let right = try!(parse_source(&tree.children[2]));
+            assert_tree_sql_type(&tree.children[3], SqlType::On);
+            let cond = try!(parse_bool_expr(&tree.children[4])).1;
+
+            Ok(Source::Join { join_type: join, left: Box::new(left), right: Box::new(right), cond: cond })
+        },
+        NodeType::Query => {
+            let subquery = try!(parse(tree));
+            Ok(Source::Query(subquery))
         },
         _ => {
-            Err(ParseErr{ token: None })
+            Err(ParseErr { token: find_first_token(tree).map(|token| token.clone()) })
         }
     }
 }
@@ -749,6 +789,24 @@ mod tests {
     fn test_double_star() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select count(*, *) from bananas")).unwrap();
 
+        assert!(parse(&parse_tree).is_err());
+    }
+
+    #[test]
+    fn test_select_subquery() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select * from (select * from bananas)")).unwrap();
+        parse(&parse_tree).unwrap();
+    }
+
+    #[test]
+    fn test_select_join() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select * from (people inner join pets on people.id = pets.person_id)")).unwrap();
+        parse(&parse_tree).unwrap();
+    }
+
+    #[test]
+    fn test_select_table_parens() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select * from (people)")).unwrap();
         assert!(parse(&parse_tree).is_err());
     }
 }

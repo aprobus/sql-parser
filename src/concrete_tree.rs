@@ -21,7 +21,6 @@ pub enum NodeType {
     ExprParenGroup,
 
     SourceTable,
-    SourceSubquery,
     SourceJoin,
     ParenGroup,
     JoinType,
