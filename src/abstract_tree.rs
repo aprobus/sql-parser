@@ -1,7 +1,7 @@
 use std::iter::Iterator;
 
 use lexer::{Token, SqlType};
-use concrete_tree::{ParseTree, NodeType};
+use concrete_tree::{ParseTree, ParseErr, NodeType};
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum Direction {
@@ -113,18 +113,22 @@ fn op_rank(math_op: &MathOp) -> u8 {
     }
 }
 
-fn parse_field_type(tree: &ParseTree) -> ValueExpr {
+fn parse_field_type(tree: &ParseTree, allow_star: bool) -> Result<ValueExpr, ParseErr> {
     match tree.node_type {
         NodeType::FieldValueLiteral => {
             let field_name = node_token(&tree.children[0]).text.clone();
-            ValueExpr::Literal(field_name)
+            Ok(ValueExpr::Literal(field_name))
         },
         NodeType::FieldValuePrimitive => {
             let field_val = node_token(&tree.children[0]).text.clone();
-            ValueExpr::Primitive(field_val)
+            Ok(ValueExpr::Primitive(field_val))
         },
         NodeType::FieldValueStar => {
-            ValueExpr::Star
+            if allow_star {
+                Ok(ValueExpr::Star)
+            } else {
+                Err(ParseErr { token: Some(node_token(&tree.children[0]).clone()) })
+            }
         },
         NodeType::FieldValueScoped => {
             assert_tree_sql_type(&tree.children[0], SqlType::Literal);
@@ -134,23 +138,23 @@ fn parse_field_type(tree: &ParseTree) -> ValueExpr {
 
             let column_token = node_token(&tree.children[2]);
             match column_token.sql_type {
-                SqlType::Literal => ValueExpr::ScopedLiteral(table_name, column_token.text.clone()),
-                SqlType::Star => ValueExpr::ScopedStar(table_name),
+                SqlType::Literal => Ok(ValueExpr::ScopedLiteral(table_name, column_token.text.clone())),
+                SqlType::Star => Ok(ValueExpr::ScopedStar(table_name)),
                 _ => { panic!("Unknown scoped value: {:?}", column_token.sql_type) }
             }
         },
         NodeType::FieldValueMath => {
-            let mut value_exprs = vec![parse_field_type(&tree.children[0])];
+            let mut value_exprs = vec![try!(parse_field_type(&tree.children[0], true))];
             let mut math_ops = vec![parse_math_op(&tree.children[1])];
 
             let mut right_child = &tree.children[2];
             while right_child.node_type == NodeType::FieldValueMath {
-                value_exprs.push(parse_field_type(&right_child.children[0]));
+                value_exprs.push(try!(parse_field_type(&right_child.children[0], true)));
                 math_ops.push(parse_math_op(&right_child.children[1]));
                 right_child = &right_child.children[2];
             }
 
-            value_exprs.push(parse_field_type(right_child));
+            value_exprs.push(try!(parse_field_type(right_child, true)));
 
             //TODO: Inefficient!
             // 1. Finding min op every iteration
@@ -165,14 +169,14 @@ fn parse_field_type(tree: &ParseTree) -> ValueExpr {
                 value_exprs.insert(i, ValueExpr::Math(op, Box::new(left), Box::new(right)));
             }
 
-            value_exprs.remove(0)
+            Ok(value_exprs.remove(0))
         },
         NodeType::FieldValueParenGroup => {
             assert_tree_sql_type(&tree.children[0], SqlType::OpenParen);
-            let child_expr = parse_field_type(&tree.children[1]);
+            let child_expr = try!(parse_field_type(&tree.children[1], true));
             assert_tree_sql_type(&tree.children[2], SqlType::CloseParen);
 
-            child_expr
+            Ok(child_expr)
         },
         NodeType::FieldValueFunction => {
             assert_tree_sql_type(&tree.children[0], SqlType::Literal);
@@ -180,16 +184,16 @@ fn parse_field_type(tree: &ParseTree) -> ValueExpr {
             assert_tree_sql_type(&tree.children[1], SqlType::OpenParen);
             assert_tree_sql_type(&tree.children.last().unwrap(), SqlType::CloseParen);
 
-            let args = tree.children.iter().skip(2).take(tree.children.len() - 3).enumerate().flat_map(|(i, child)| {
+            let args = tree.children.iter().skip(2).take(tree.children.len() - 3).enumerate().filter_map(|(i, child)| {
                 if i & 1 == 0 {
-                    Some(parse_field_type(child))
+                    Some(parse_field_type(child, i == 0))
                 } else {
                     assert_tree_sql_type(child, SqlType::Separator);
                     None
                 }
-            }).collect::<Vec<ValueExpr>>();
+            }).collect::<Result<Vec<ValueExpr>, ParseErr>>();
 
-            ValueExpr::Function { name: function_name, args: args }
+            args.map(|args| ValueExpr::Function { name: function_name, args: args })
         },
         _ => {
             panic!("Unknown type: {:?}", tree.node_type);
@@ -197,18 +201,18 @@ fn parse_field_type(tree: &ParseTree) -> ValueExpr {
     }
 }
 
-fn parse_named_field_def(tree: &ParseTree) -> Field {
+fn parse_named_field_def(tree: &ParseTree) -> Result<Field, ParseErr> {
     match tree.node_type {
         NodeType::NamedFieldDef => {
-            let field_type = parse_field_type(&tree.children[0]);
+            let field_type = try!(parse_field_type(&tree.children[0], true));
             let column_name = node_token(&tree.children[2]).text.clone();
 
-            Field { alias: Some(column_name), field_type: field_type }
+            Ok(Field { alias: Some(column_name), field_type: field_type })
         },
         NodeType::FieldDef => {
-            let field_type = parse_field_type(&tree.children[0]);
+            let field_type = try!(parse_field_type(&tree.children[0], true));
 
-            Field { alias: None, field_type: field_type }
+            Ok(Field { alias: None, field_type: field_type })
         },
         _ => {
             panic!("Unknown type");
@@ -216,7 +220,7 @@ fn parse_named_field_def(tree: &ParseTree) -> Field {
     }
 }
 
-fn parse_selection(tree: &ParseTree) -> Vec<Field> {
+fn parse_selection(tree: &ParseTree) -> Result<Vec<Field>, ParseErr> {
     assert_node_type(tree, NodeType::Selection);
 
     //TODO: Strict validation?
@@ -229,23 +233,23 @@ fn parse_selection(tree: &ParseTree) -> Vec<Field> {
                 None
             }
         }
-    }).collect()
+    }).collect::<Result<Vec<Field>, ParseErr>>()
 }
 
-fn parse_source(tree: &ParseTree) -> Source {
+fn parse_source(tree: &ParseTree) -> Result<Source, ParseErr> {
     assert_node_type(tree, NodeType::SourceTable);
 
     match tree.children[0].node_type {
         NodeType::Concrete(ref token) => {
-            Source::Table(token.text.clone())
+            Ok(Source::Table(token.text.clone()))
         },
         _ => {
-            panic!("Waddup");
+            Err(ParseErr{ token: None })
         }
     }
 }
 
-fn parse_sources(tree: &ParseTree) -> Vec<Source> {
+fn parse_sources(tree: &ParseTree) -> Result<Vec<Source>, ParseErr> {
     assert_node_type(tree, NodeType::Source);
 
     let mut child_iter = tree.children.iter();
@@ -258,13 +262,13 @@ fn parse_sources(tree: &ParseTree) -> Vec<Source> {
             assert_tree_sql_type(child, SqlType::Separator);
             None
         }
-    }).collect()
+    }).collect::<Result<Vec<Source>, ParseErr>>()
 }
 
-fn parse_bool_expr(tree: &ParseTree) -> (NodeType, BoolExpr) {
+fn parse_bool_expr(tree: &ParseTree) -> Result<(NodeType, BoolExpr), ParseErr> {
     match tree.node_type {
         NodeType::ExprBoolLogic => {
-            let top_left = Box::new(parse_bool_expr(&tree.children[0]).1);
+            let top_left = Box::new(try!(parse_bool_expr(&tree.children[0])).1);
 
             let top_bool_logic = match node_sql_type(&tree.children[1]) {
                 SqlType::And => BoolLogic::And,
@@ -274,14 +278,14 @@ fn parse_bool_expr(tree: &ParseTree) -> (NodeType, BoolExpr) {
                 }
             };
 
-            let (right_node_type, right_bool_expr) = parse_bool_expr(&tree.children[2]);
+            let (right_node_type, right_bool_expr) = try!(parse_bool_expr(&tree.children[2]));
 
             match right_node_type {
                 NodeType::ExprBoolLogic => {
                     match right_bool_expr {
                         BoolExpr::LogicExpr{ ref left, ref bool_logic, ref right } => {
                             if top_bool_logic == BoolLogic::And && bool_logic == &BoolLogic::Or {
-                                return (NodeType::ExprBoolLogic, BoolExpr::LogicExpr {
+                                return Ok((NodeType::ExprBoolLogic, BoolExpr::LogicExpr {
                                     bool_logic: BoolLogic::Or,
                                     left: Box::new(BoolExpr::LogicExpr {
                                         bool_logic: BoolLogic::And,
@@ -289,7 +293,7 @@ fn parse_bool_expr(tree: &ParseTree) -> (NodeType, BoolExpr) {
                                         right: left.clone()
                                     }),
                                     right: right.clone()
-                                });
+                                }));
                             }
                         },
                         _ => { }
@@ -299,10 +303,10 @@ fn parse_bool_expr(tree: &ParseTree) -> (NodeType, BoolExpr) {
             }
 
             let top_right = Box::new(right_bool_expr);
-            (NodeType::ExprBoolLogic, BoolExpr::LogicExpr { bool_logic: top_bool_logic, left: top_left, right: top_right })
+            Ok((NodeType::ExprBoolLogic, BoolExpr::LogicExpr { bool_logic: top_bool_logic, left: top_left, right: top_right }))
         },
         NodeType::ExprBoolCond => {
-            let left_value = parse_field_type(&tree.children[0]);
+            let left_value = try!(parse_field_type(&tree.children[0], true));
             let bool_op = match node_sql_type(&tree.children[1]) {
                 SqlType::Equal => BoolOp::Equal,
                 SqlType::NotEqual => BoolOp::NotEqual,
@@ -314,15 +318,15 @@ fn parse_bool_expr(tree: &ParseTree) -> (NodeType, BoolExpr) {
                     panic!("Waddup");
                 }
             };
-            let right_value = parse_field_type(&tree.children[2]);
+            let right_value = try!(parse_field_type(&tree.children[2], true));
 
-            (NodeType::ExprBoolCond, BoolExpr::Cond { left: left_value, bool_op: bool_op, right: right_value })
+            Ok((NodeType::ExprBoolCond, BoolExpr::Cond { left: left_value, bool_op: bool_op, right: right_value }))
         },
         NodeType::ExprParenGroup => {
             assert_tree_sql_type(&tree.children[0], SqlType::OpenParen);
-            let sub_expr = parse_bool_expr(&tree.children[1]).1;
+            let sub_expr = try!(parse_bool_expr(&tree.children[1])).1;
             assert_tree_sql_type(&tree.children[2], SqlType::CloseParen);
-            (NodeType::ExprParenGroup, sub_expr)
+            Ok((NodeType::ExprParenGroup, sub_expr))
         },
         _ => {
             panic!("Waddup");
@@ -330,51 +334,40 @@ fn parse_bool_expr(tree: &ParseTree) -> (NodeType, BoolExpr) {
     }
 }
 
-fn parse_filter(tree: &ParseTree) -> BoolExpr {
+fn parse_filter(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
     assert_node_type(tree, NodeType::Filter);
     assert_tree_sql_type(&tree.children[0], SqlType::Where);
 
-    parse_bool_expr(&tree.children[1]).1
+    parse_bool_expr(&tree.children[1]).map(|x| x.1)
 }
 
-fn parse_groups(tree: &ParseTree) -> Vec<Grouping> {
+fn parse_groups(tree: &ParseTree) -> Result<Vec<Grouping>, ParseErr> {
     assert_node_type(tree, NodeType::Grouping);
 
     assert_tree_sql_type(&tree.children[0], SqlType::Group);
     assert_tree_sql_type(&tree.children[1], SqlType::By);
 
-    let mut child_iter = tree.children.iter().skip(2);
-    let mut groups = vec![];
-
-    loop {
-        match child_iter.next().unwrap().node_type {
-            NodeType::Concrete(ref token) => {
-                groups.push(Grouping(token.text.clone()));
-            },
-            _ => {
-                panic!("Waddup");
-            }
-        }
-
-        if let Some(child) = child_iter.next() {
-            assert_tree_sql_type(child, SqlType::Separator);
+    tree.children.iter().skip(2).enumerate().filter_map(|(i, child)| {
+        if i & 1 == 0 {
+            let group_token = node_token(child);
+            Some(Ok(Grouping(group_token.text.clone())))
         } else {
-            break;
+            assert_tree_sql_type(&child, SqlType::Separator);
+            None
         }
-    }
-
-    groups
+    }).collect::<Result<Vec<Grouping>, ParseErr>>()
 }
 
-fn parse_having(tree: &ParseTree) -> BoolExpr {
+fn parse_having(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
     assert_node_type(tree, NodeType::Having);
 
     assert_tree_sql_type(&tree.children[0], SqlType::Having);
     //TODO: Verify having types
-    parse_bool_expr(&tree.children[1]).1
+    let bool_expr = try!(parse_bool_expr(&tree.children[1]));
+    Ok(bool_expr.1)
 }
 
-fn parse_order(tree: &ParseTree) -> Vec<Order> {
+fn parse_order(tree: &ParseTree) -> Result<Vec<Order>, ParseErr> {
     assert_node_type(tree, NodeType::Sort);
 
     assert_tree_sql_type(&tree.children[0], SqlType::Order);
@@ -387,25 +380,26 @@ fn parse_order(tree: &ParseTree) -> Vec<Order> {
             let field_name = typed_node_token(&child.children[0], SqlType::Literal).text.clone();
 
             let dir = if let Some(dir_tree) = child.children.get(1) {
-                let dir_type = node_sql_type(dir_tree);
-                match dir_type {
+                let dir_token = node_token(&dir_tree);
+                //let dir_type = node_sql_type(dir_tree);
+                match dir_token.sql_type {
                     SqlType::Asc => Direction::Asc,
                     SqlType::Desc => Direction::Desc,
-                    _ => { panic!("Unexpected sql type: {:?}", dir_type) }
+                    _ => { return Some(Err(ParseErr { token: Some(dir_token.clone()) })) }
                 }
             } else {
                 Direction::Asc
             };
 
-            Some(Order(field_name, dir))
+            Some(Ok(Order(field_name, dir)))
         } else {
             assert_tree_sql_type(&child, SqlType::Separator);
             None
         }
-    }).collect::<Vec<Order>>()
+    }).collect::<Result<Vec<Order>, ParseErr>>()
 }
 
-fn parse_limit(tree: &ParseTree) -> Limit {
+fn parse_limit(tree: &ParseTree) -> Result<Limit, ParseErr> {
     assert_node_type(tree, NodeType::Limit);
 
     assert_tree_sql_type(&tree.children[0], SqlType::Limit);
@@ -413,22 +407,22 @@ fn parse_limit(tree: &ParseTree) -> Limit {
     let token = node_token(&tree.children[1]);
     match token.sql_type {
         SqlType::All => {
-            Limit::All
+            Ok(Limit::All)
         },
         SqlType::Int => {
             let limit = token.text.parse::<i64>().unwrap();
             if limit < 0 {
                 panic!("Limit cannot be less than 0");
             }
-            Limit::Amount(limit)
+            Ok(Limit::Amount(limit))
         },
         _ => {
-            panic!("Unknown limit type");
+            Err(ParseErr { token: Some(token.clone()) })
         }
     }
 }
 
-fn parse_offset(tree: &ParseTree) -> i64 {
+fn parse_offset(tree: &ParseTree) -> Result<i64, ParseErr> {
     assert_node_type(tree, NodeType::Offset);
 
     assert_tree_sql_type(&tree.children[0], SqlType::Offset);
@@ -437,26 +431,27 @@ fn parse_offset(tree: &ParseTree) -> i64 {
     match token.sql_type {
         SqlType::Int => {
             let offset = token.text.parse::<i64>().unwrap();
-            if offset < 0 {
-                panic!("Offset cannot be less than 0");
+            if offset >= 0 {
+                Ok(offset)
+            } else {
+                Err(ParseErr { token: Some(token.clone()) })
             }
-            offset
         },
         _ => {
-            panic!("Unknown offset type");
+            Err(ParseErr { token: Some(token.clone()) })
         }
     }
 }
 
-pub fn parse(tree: &ParseTree) -> Query {
+pub fn parse(tree: &ParseTree) -> Result<Query, ParseErr> {
     let mut child_iter = tree.children.iter();
     let mut current_child = child_iter.next();
 
-    let fields = parse_selection(current_child.as_ref().unwrap());
+    let fields = try!(parse_selection(current_child.as_ref().unwrap()));
     current_child = child_iter.next();
 
     let sources = if is_node_type(current_child, NodeType::Source) {
-        let sources = parse_sources(current_child.unwrap());
+        let sources = try!(parse_sources(current_child.unwrap()));
         current_child = child_iter.next();
         sources
     } else {
@@ -464,7 +459,7 @@ pub fn parse(tree: &ParseTree) -> Query {
     };
 
     let filter = if is_node_type(current_child, NodeType::Filter) {
-        let filter = parse_filter(current_child.unwrap());
+        let filter = try!(parse_filter(current_child.unwrap()));
         current_child = child_iter.next();
         Some(filter)
     } else {
@@ -473,12 +468,12 @@ pub fn parse(tree: &ParseTree) -> Query {
 
     let mut groups = vec![];
     if is_node_type(current_child, NodeType::Grouping) {
-        groups = parse_groups(current_child.unwrap());
+        groups = try!(parse_groups(current_child.unwrap()));
         current_child = child_iter.next();
     }
 
     let having = if is_node_type(current_child, NodeType::Having) {
-        let having = parse_having(current_child.unwrap());
+        let having = try!(parse_having(current_child.unwrap()));
         current_child = child_iter.next();
         Some(having)
     } else {
@@ -486,7 +481,7 @@ pub fn parse(tree: &ParseTree) -> Query {
     };
 
     let orders = if is_node_type(current_child, NodeType::Sort) {
-        let orders = parse_order(current_child.unwrap());
+        let orders = try!(parse_order(current_child.unwrap()));
         current_child = child_iter.next();
         orders
     } else {
@@ -494,7 +489,7 @@ pub fn parse(tree: &ParseTree) -> Query {
     };
 
     let limit = if is_node_type(current_child, NodeType::Limit) {
-        let limit = parse_limit(current_child.unwrap());
+        let limit = try!(parse_limit(current_child.unwrap()));
         current_child = child_iter.next();
         limit
     } else {
@@ -502,13 +497,13 @@ pub fn parse(tree: &ParseTree) -> Query {
     };
 
     let offset = if is_node_type(current_child, NodeType::Offset) {
-        let offset = parse_offset(current_child.unwrap());
+        let offset = try!(parse_offset(current_child.unwrap()));
         offset
     } else {
         0i64
     };
 
-    Query {
+    Ok(Query {
         fields: fields,
         sources: sources,
         filter: filter,
@@ -517,7 +512,7 @@ pub fn parse(tree: &ParseTree) -> Query {
         orders: orders,
         limit: limit,
         offset: offset
-    }
+    })
 }
 
 fn assert_node_type(tree: &ParseTree, expected_type: NodeType) {
@@ -592,7 +587,7 @@ mod tests {
     fn test_query() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select age, name as person_name from people where age < 5 limit 2 offset 1")).unwrap();
 
-        let query = parse(&parse_tree);
+        let query = parse(&parse_tree).unwrap();
         assert_eq!(&query.fields, &vec![
                    Field{ alias: None, field_type: ValueExpr::Literal("age".to_string()) },
                    Field{ alias: Some("person_name".to_string()), field_type: ValueExpr::Literal("name".to_string()) }
@@ -608,7 +603,7 @@ mod tests {
     fn test_group() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select age from people group by age having count(*) > 2")).unwrap();
 
-        let query = parse(&parse_tree);
+        let query = parse(&parse_tree).unwrap();
         assert_eq!(query.groups, vec![Grouping("age".to_string())]);
 
         let function_call = ValueExpr::Function { name: "count".to_string(), args: vec![ValueExpr::Star] };
@@ -619,7 +614,7 @@ mod tests {
     fn test_orders() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select * from people order by age desc, name")).unwrap();
 
-        let query = parse(&parse_tree);
+        let query = parse(&parse_tree).unwrap();
         assert_eq!(query.orders, vec![Order("age".to_string(), Direction::Desc), Order("name".to_string(), Direction::Asc)]);
     }
 
@@ -627,7 +622,7 @@ mod tests {
     fn test_scoped_field_select() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select people.name as lolz from people")).unwrap();
 
-        let query = parse(&parse_tree);
+        let query = parse(&parse_tree).unwrap();
         assert_eq!(&query.fields, &vec![ Field{ alias: Some("lolz".to_string()), field_type: ValueExpr::ScopedLiteral("people".to_string(), "name".to_string()) }, ]);
     }
 
@@ -635,7 +630,7 @@ mod tests {
     fn test_scoped_star_select() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select people.* from people")).unwrap();
 
-        let query = parse(&parse_tree);
+        let query = parse(&parse_tree).unwrap();
         assert_eq!(&query.fields, &vec![ Field{ alias: None, field_type: ValueExpr::ScopedStar("people".to_string()) }, ]);
     }
 
@@ -643,7 +638,7 @@ mod tests {
     fn test_query_bool_precedence() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select * from people where age > 1 and age > 2 or age > 3 and (age > 4 or age > 5)")).unwrap();
 
-        let query = parse(&parse_tree);
+        let query = parse(&parse_tree).unwrap();
 
         let cond_1 = BoolExpr::Cond {
             left: ValueExpr::Literal("age".to_string()),
@@ -700,7 +695,7 @@ mod tests {
     fn test_query_math_precedence() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select 1 * 2 - 3 / 4 * (5 + 6)")).unwrap();
 
-        let query = parse(&parse_tree);
+        let query = parse(&parse_tree).unwrap();
 
         let mult_1_2 = ValueExpr::Math(MathOp::Multiply, Box::new(ValueExpr::Primitive("1".to_string())), Box::new(ValueExpr::Primitive("2".to_string())));
         let add_5_6 = ValueExpr::Math(MathOp::Add, Box::new(ValueExpr::Primitive("5".to_string())), Box::new(ValueExpr::Primitive("6".to_string())));
@@ -715,12 +710,19 @@ mod tests {
     fn test_query_math_func() {
         let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select 2 * count(*) + 1")).unwrap();
 
-        let query = parse(&parse_tree);
+        let query = parse(&parse_tree).unwrap();
 
         let func = ValueExpr::Function{ name: "count".to_string(), args: vec![ValueExpr::Star] };
         let mult = ValueExpr::Math(MathOp::Multiply, Box::new(ValueExpr::Primitive("2".to_string())), Box::new(func));
         let add = ValueExpr::Math(MathOp::Add, Box::new(mult), Box::new(ValueExpr::Primitive("1".to_string())));
 
         assert_eq!(query.fields, vec![Field { alias: None, field_type: add }]);
+    }
+
+    #[test]
+    fn test_double_star() {
+        let parse_tree = concrete_tree::parse(SqlTokenizer::new(&"select count(*, *) from bananas")).unwrap();
+
+        assert!(parse(&parse_tree).is_err());
     }
 }
