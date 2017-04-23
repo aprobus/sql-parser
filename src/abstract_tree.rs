@@ -261,7 +261,7 @@ fn parse_source(tree: &ParseTree) -> Result<Source, ParseErr> {
             let join = try!(parse_join_type(&tree.children[1]));
             let right = try!(parse_source(&tree.children[2]));
             assert_tree_sql_type(&tree.children[3], SqlType::On);
-            let cond = try!(parse_bool_expr(&tree.children[4])).1;
+            let cond = try!(parse_bool_expr(&tree.children[4]));
 
             Ok(Source::Join { join_type: join, left: Box::new(left), right: Box::new(right), cond: cond })
         },
@@ -284,45 +284,48 @@ fn parse_sources(tree: &ParseTree) -> Result<Vec<Source>, ParseErr> {
     parse_separated_list(&mut child_iter, |_, child| parse_source(child))
 }
 
-fn parse_bool_expr(tree: &ParseTree) -> Result<(NodeType, BoolExpr), ParseErr> {
+fn parse_bool_op(tree: &ParseTree) -> Result<BoolLogic, ParseErr> {
+    match node_sql_type(tree) {
+        SqlType::And => Ok(BoolLogic::And),
+        SqlType::Or => Ok(BoolLogic::Or),
+        _ => {
+            return Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
+        }
+    }
+}
+
+fn bool_op_rank(op: &BoolLogic) -> u8 {
+    match *op {
+        BoolLogic::And => 0,
+        BoolLogic::Or => 1
+    }
+}
+
+fn parse_bool_expr(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
     match tree.node_type {
         NodeType::ExprBoolLogic => {
-            let top_left = Box::new(try!(parse_bool_expr(&tree.children[0])).1);
+            let mut bool_exprs = vec![try!(parse_bool_expr(&tree.children[0]))];
+            let mut bool_ops = vec![try!(parse_bool_op(&tree.children[1]))];
 
-            let top_bool_logic = match node_sql_type(&tree.children[1]) {
-                SqlType::And => BoolLogic::And,
-                SqlType::Or => BoolLogic::Or,
-                _ => {
-                    return Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
-                }
-            };
+            let mut right = &tree.children[2];
+            while right.node_type == NodeType::ExprBoolLogic {
+                bool_exprs.push(try!(parse_bool_expr(&right.children[0])));
+                bool_ops.push(try!(parse_bool_op(&right.children[1])));
+                right = &right.children[2];
+            }
+            bool_exprs.push(try!(parse_bool_expr(right)));
 
-            let (right_node_type, right_bool_expr) = try!(parse_bool_expr(&tree.children[2]));
+            while bool_exprs.len() > 1 {
+                let (i, _) = bool_ops.iter().map(|op| bool_op_rank(op)).enumerate().min_by_key(|&(_, op)| op).unwrap();
 
-            match right_node_type {
-                NodeType::ExprBoolLogic => {
-                    match right_bool_expr {
-                        BoolExpr::LogicExpr{ ref left, ref bool_logic, ref right } => {
-                            if top_bool_logic == BoolLogic::And && bool_logic == &BoolLogic::Or {
-                                return Ok((NodeType::ExprBoolLogic, BoolExpr::LogicExpr {
-                                    bool_logic: BoolLogic::Or,
-                                    left: Box::new(BoolExpr::LogicExpr {
-                                        bool_logic: BoolLogic::And,
-                                        left: top_left,
-                                        right: left.clone()
-                                    }),
-                                    right: right.clone()
-                                }));
-                            }
-                        },
-                        _ => { }
-                    }
-                },
-                _ => { }
+                let op = bool_ops.remove(i);
+                let left = bool_exprs.remove(i);
+                let right = bool_exprs.remove(i);
+
+                bool_exprs.insert(i, BoolExpr::LogicExpr { bool_logic: op, left: Box::new(left), right: Box::new(right) });
             }
 
-            let top_right = Box::new(right_bool_expr);
-            Ok((NodeType::ExprBoolLogic, BoolExpr::LogicExpr { bool_logic: top_bool_logic, left: top_left, right: top_right }))
+            Ok(bool_exprs.remove(0))
         },
         NodeType::ExprBoolCond => {
             let left_value = try!(parse_field_type(&tree.children[0], true));
@@ -339,13 +342,13 @@ fn parse_bool_expr(tree: &ParseTree) -> Result<(NodeType, BoolExpr), ParseErr> {
             };
             let right_value = try!(parse_field_type(&tree.children[2], true));
 
-            Ok((NodeType::ExprBoolCond, BoolExpr::Cond { left: left_value, bool_op: bool_op, right: right_value }))
+            Ok(BoolExpr::Cond { left: left_value, bool_op: bool_op, right: right_value })
         },
         NodeType::ExprParenGroup => {
             assert_tree_sql_type(&tree.children[0], SqlType::OpenParen);
-            let sub_expr = try!(parse_bool_expr(&tree.children[1])).1;
+            let sub_expr = try!(parse_bool_expr(&tree.children[1]));
             assert_tree_sql_type(&tree.children[2], SqlType::CloseParen);
-            Ok((NodeType::ExprParenGroup, sub_expr))
+            Ok(sub_expr)
         },
         _ => {
             Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
@@ -357,7 +360,7 @@ fn parse_filter(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
     assert_node_type(tree, NodeType::Filter);
     assert_tree_sql_type(&tree.children[0], SqlType::Where);
 
-    parse_bool_expr(&tree.children[1]).map(|x| x.1)
+    parse_bool_expr(&tree.children[1])
 }
 
 fn parse_groups(tree: &ParseTree) -> Result<Vec<Grouping>, ParseErr> {
@@ -379,7 +382,7 @@ fn parse_having(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
     assert_tree_sql_type(&tree.children[0], SqlType::Having);
     //TODO: Verify having types
     let bool_expr = try!(parse_bool_expr(&tree.children[1]));
-    Ok(bool_expr.1)
+    Ok(bool_expr)
 }
 
 fn parse_order(tree: &ParseTree) -> Result<Vec<Order>, ParseErr> {
