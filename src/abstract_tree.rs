@@ -95,13 +95,14 @@ pub struct Query {
     pub offset: i64,
 }
 
-fn parse_math_op(tree: &ParseTree) -> MathOp {
-    match node_sql_type(&tree) {
-        SqlType::Star => MathOp::Multiply,
-        SqlType::Plus => MathOp::Add,
-        SqlType::Minus => MathOp::Subtract,
-        SqlType::Divide => MathOp::Divide,
-        _ => { panic!("Unknown math op") }
+fn parse_math_op(tree: &ParseTree) -> Result<MathOp, ParseErr> {
+    let math_token = try!(node_token(tree));
+    match math_token.sql_type {
+        SqlType::Star => Ok(MathOp::Multiply),
+        SqlType::Plus => Ok(MathOp::Add),
+        SqlType::Minus => Ok(MathOp::Subtract),
+        SqlType::Divide => Ok(MathOp::Divide),
+        _ => { Err(ParseErr { token: Some(math_token.clone()) }) }
     }
 }
 
@@ -117,27 +118,27 @@ fn op_rank(math_op: &MathOp) -> u8 {
 fn parse_field_type(tree: &ParseTree, allow_star: bool) -> Result<ValueExpr, ParseErr> {
     match tree.node_type {
         NodeType::FieldValueLiteral => {
-            let field_name = node_token(&tree.children[0]).text.clone();
+            let field_name = try!(node_token(&tree.children[0])).text.clone();
             Ok(ValueExpr::Literal(field_name))
         },
         NodeType::FieldValuePrimitive => {
-            let field_val = node_token(&tree.children[0]).text.clone();
+            let field_val = try!(node_token(&tree.children[0])).text.clone();
             Ok(ValueExpr::Primitive(field_val))
         },
         NodeType::FieldValueStar => {
             if allow_star {
                 Ok(ValueExpr::Star)
             } else {
-                Err(ParseErr { token: Some(node_token(&tree.children[0]).clone()) })
+                Err(ParseErr { token: find_first_token(tree) })
             }
         },
         NodeType::FieldValueScoped => {
-            assert_tree_sql_type(&tree.children[0], SqlType::Literal);
-            assert_tree_sql_type(&tree.children[1], SqlType::Dot);
+            try!(assert_tree_sql_type(&tree.children[0], SqlType::Literal));
+            try!(assert_tree_sql_type(&tree.children[1], SqlType::Dot));
 
-            let table_name = typed_node_token(&tree.children[0], SqlType::Literal).text.clone();
+            let table_name = try!(typed_node_token(&tree.children[0], SqlType::Literal)).text.clone();
 
-            let column_token = node_token(&tree.children[2]);
+            let column_token = try!(node_token(&tree.children[2]));
             match column_token.sql_type {
                 SqlType::Literal => Ok(ValueExpr::ScopedLiteral(table_name, column_token.text.clone())),
                 SqlType::Star => Ok(ValueExpr::ScopedStar(table_name)),
@@ -146,12 +147,12 @@ fn parse_field_type(tree: &ParseTree, allow_star: bool) -> Result<ValueExpr, Par
         },
         NodeType::FieldValueMath => {
             let mut value_exprs = vec![try!(parse_field_type(&tree.children[0], true))];
-            let mut math_ops = vec![parse_math_op(&tree.children[1])];
+            let mut math_ops = vec![try!(parse_math_op(&tree.children[1]))];
 
             let mut right_child = &tree.children[2];
             while right_child.node_type == NodeType::FieldValueMath {
                 value_exprs.push(try!(parse_field_type(&right_child.children[0], true)));
-                math_ops.push(parse_math_op(&right_child.children[1]));
+                math_ops.push(try!(parse_math_op(&right_child.children[1])));
                 right_child = &right_child.children[2];
             }
 
@@ -173,24 +174,24 @@ fn parse_field_type(tree: &ParseTree, allow_star: bool) -> Result<ValueExpr, Par
             Ok(value_exprs.remove(0))
         },
         NodeType::FieldValueParenGroup => {
-            assert_tree_sql_type(&tree.children[0], SqlType::OpenParen);
+            try!(assert_tree_sql_type(&tree.children[0], SqlType::OpenParen));
             let child_expr = try!(parse_field_type(&tree.children[1], true));
-            assert_tree_sql_type(&tree.children[2], SqlType::CloseParen);
+            try!(assert_tree_sql_type(&tree.children[2], SqlType::CloseParen));
 
             Ok(child_expr)
         },
         NodeType::FieldValueFunction => {
-            assert_tree_sql_type(&tree.children[0], SqlType::Literal);
-            let function_name = node_token(&tree.children[0]).text.clone();
-            assert_tree_sql_type(&tree.children[1], SqlType::OpenParen);
-            assert_tree_sql_type(&tree.children.last().unwrap(), SqlType::CloseParen);
+            try!(assert_tree_sql_type(&tree.children[0], SqlType::Literal));
+            let function_name = try!(node_token(&tree.children[0])).text.clone();
+            try!(assert_tree_sql_type(&tree.children[1], SqlType::OpenParen));
+            try!(assert_tree_sql_type(&tree.children.last().unwrap(), SqlType::CloseParen));
 
             let args = parse_separated_list(&mut tree.children.iter().skip(2).take(tree.children.len() - 3), |i, child| parse_field_type(child, i == 0));
 
             args.map(|args| ValueExpr::Function { name: function_name, args: args })
         },
         _ => {
-            Err(ParseErr{ token: find_first_token(tree).map(|token| token.clone()) })
+            Err(ParseErr{ token: find_first_token(tree) })
         }
     }
 }
@@ -199,7 +200,7 @@ fn parse_named_field_def(tree: &ParseTree) -> Result<Field, ParseErr> {
     match tree.node_type {
         NodeType::NamedFieldDef => {
             let field_type = try!(parse_field_type(&tree.children[0], true));
-            let column_name = node_token(&tree.children[2]).text.clone();
+            let column_name = try!(node_token(&tree.children[2])).text.clone();
 
             Ok(Field { alias: Some(column_name), field_type: field_type })
         },
@@ -209,24 +210,24 @@ fn parse_named_field_def(tree: &ParseTree) -> Result<Field, ParseErr> {
             Ok(Field { alias: None, field_type: field_type })
         },
         _ => {
-            Err(ParseErr { token: find_first_token(tree).map(|token| token.clone()) })
+            Err(ParseErr { token: find_first_token(tree) })
         }
     }
 }
 
 fn parse_selection(tree: &ParseTree) -> Result<Vec<Field>, ParseErr> {
-    assert_node_type(tree, NodeType::Selection);
+    try!(assert_node_type(tree, NodeType::Selection));
 
     let mut child_iter = tree.children.iter();
-    assert_opt_tree_sql_type(child_iter.next(), SqlType::Select);
+    try!(assert_opt_tree_sql_type(child_iter.next(), SqlType::Select));
 
     parse_separated_list(&mut child_iter, |_, child| parse_named_field_def(&child) )
 }
 
 fn parse_join_type(tree: &ParseTree) -> Result<JoinType, ParseErr> {
-    assert_node_type(tree, NodeType::JoinType);
+    try!(assert_node_type(tree, NodeType::JoinType));
 
-    let first_token = node_token(&tree.children[0]);
+    let first_token = try!(node_token(&tree.children[0]));
     match first_token.sql_type {
         SqlType::Join | SqlType::Inner => Ok(JoinType::Inner),
         SqlType::Left => Ok(JoinType::Left),
@@ -239,17 +240,17 @@ fn parse_join_type(tree: &ParseTree) -> Result<JoinType, ParseErr> {
 fn parse_source(tree: &ParseTree) -> Result<Source, ParseErr> {
     match tree.node_type {
         NodeType::SourceTable => {
-            let table_name_token = node_token(&tree.children[0]);
+            let table_name_token = try!(node_token(&tree.children[0]));
             Ok(Source::Table(table_name_token.text.clone()))
         },
         NodeType::ParenGroup => {
-            assert_tree_sql_type(&tree.children[0], SqlType::OpenParen);
+            try!(assert_tree_sql_type(&tree.children[0], SqlType::OpenParen));
             let subquery = try!(parse_source(&tree.children[1]));
-            assert_tree_sql_type(&tree.children[2], SqlType::CloseParen);
+            try!(assert_tree_sql_type(&tree.children[2], SqlType::CloseParen));
 
             match subquery {
                 Source::Table(_) => {
-                    Err(ParseErr { token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
+                    Err(ParseErr { token: find_first_token(&tree.children[1]) })
                 },
                 _ => {
                     Ok(subquery)
@@ -260,7 +261,7 @@ fn parse_source(tree: &ParseTree) -> Result<Source, ParseErr> {
             let left = try!(parse_source(&tree.children[0]));
             let join = try!(parse_join_type(&tree.children[1]));
             let right = try!(parse_source(&tree.children[2]));
-            assert_tree_sql_type(&tree.children[3], SqlType::On);
+            try!(assert_tree_sql_type(&tree.children[3], SqlType::On));
             let cond = try!(parse_bool_expr(&tree.children[4]));
 
             Ok(Source::Join { join_type: join, left: Box::new(left), right: Box::new(right), cond: cond })
@@ -270,26 +271,27 @@ fn parse_source(tree: &ParseTree) -> Result<Source, ParseErr> {
             Ok(Source::Query(subquery))
         },
         _ => {
-            Err(ParseErr { token: find_first_token(tree).map(|token| token.clone()) })
+            Err(ParseErr { token: find_first_token(tree) })
         }
     }
 }
 
 fn parse_sources(tree: &ParseTree) -> Result<Vec<Source>, ParseErr> {
-    assert_node_type(tree, NodeType::Source);
+    try!(assert_node_type(tree, NodeType::Source));
 
     let mut child_iter = tree.children.iter();
-    assert_opt_tree_sql_type(child_iter.next(), SqlType::From);
+    try!(assert_opt_tree_sql_type(child_iter.next(), SqlType::From));
 
     parse_separated_list(&mut child_iter, |_, child| parse_source(child))
 }
 
 fn parse_bool_op(tree: &ParseTree) -> Result<BoolLogic, ParseErr> {
-    match node_sql_type(tree) {
+    let token = try!(node_token(tree));
+    match token.sql_type {
         SqlType::And => Ok(BoolLogic::And),
         SqlType::Or => Ok(BoolLogic::Or),
         _ => {
-            return Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
+            return Err(ParseErr{ token: find_first_token(&tree.children[1]) })
         }
     }
 }
@@ -329,7 +331,8 @@ fn parse_bool_expr(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
         },
         NodeType::ExprBoolCond => {
             let left_value = try!(parse_field_type(&tree.children[0], true));
-            let bool_op = match node_sql_type(&tree.children[1]) {
+            let bool_op_token = try!(node_token(&tree.children[1]));
+            let bool_op = match bool_op_token.sql_type {
                 SqlType::Equal => BoolOp::Equal,
                 SqlType::NotEqual => BoolOp::NotEqual,
                 SqlType::GreaterThan => BoolOp::GreaterThan,
@@ -337,7 +340,7 @@ fn parse_bool_expr(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
                 SqlType::LessThan => BoolOp::LessThan,
                 SqlType::LessThanEqual => BoolOp::LessThanEqual,
                 _ => {
-                    return Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) });
+                    return Err(ParseErr{ token: find_first_token(&tree.children[1]) });
                 }
             };
             let right_value = try!(parse_field_type(&tree.children[2], true));
@@ -345,60 +348,59 @@ fn parse_bool_expr(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
             Ok(BoolExpr::Cond { left: left_value, bool_op: bool_op, right: right_value })
         },
         NodeType::ExprParenGroup => {
-            assert_tree_sql_type(&tree.children[0], SqlType::OpenParen);
+            try!(assert_tree_sql_type(&tree.children[0], SqlType::OpenParen));
             let sub_expr = try!(parse_bool_expr(&tree.children[1]));
-            assert_tree_sql_type(&tree.children[2], SqlType::CloseParen);
+            try!(assert_tree_sql_type(&tree.children[2], SqlType::CloseParen));
             Ok(sub_expr)
         },
         _ => {
-            Err(ParseErr{ token: find_first_token(&tree.children[1]).map(|token| token.clone()) })
+            Err(ParseErr{ token: find_first_token(&tree.children[1]) })
         }
     }
 }
 
 fn parse_filter(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
-    assert_node_type(tree, NodeType::Filter);
-    assert_tree_sql_type(&tree.children[0], SqlType::Where);
+    try!(assert_node_type(tree, NodeType::Filter));
+    try!(assert_tree_sql_type(&tree.children[0], SqlType::Where));
 
     parse_bool_expr(&tree.children[1])
 }
 
 fn parse_groups(tree: &ParseTree) -> Result<Vec<Grouping>, ParseErr> {
-    assert_node_type(tree, NodeType::Grouping);
+    try!(assert_node_type(tree, NodeType::Grouping));
 
     let mut child_iter = tree.children.iter();
-    assert_opt_tree_sql_type(child_iter.next(), SqlType::Group);
-    assert_opt_tree_sql_type(child_iter.next(), SqlType::By);
+    try!(assert_opt_tree_sql_type(child_iter.next(), SqlType::Group));
+    try!(assert_opt_tree_sql_type(child_iter.next(), SqlType::By));
 
     parse_separated_list(&mut child_iter, |_, child| {
-        let group_token = node_token(child);
+        let group_token = try!(node_token(child));
         Ok(Grouping(group_token.text.clone()))
     })
 }
 
 fn parse_having(tree: &ParseTree) -> Result<BoolExpr, ParseErr> {
-    assert_node_type(tree, NodeType::Having);
+    try!(assert_node_type(tree, NodeType::Having));
 
-    assert_tree_sql_type(&tree.children[0], SqlType::Having);
-    //TODO: Verify having types
+    try!(assert_tree_sql_type(&tree.children[0], SqlType::Having));
     let bool_expr = try!(parse_bool_expr(&tree.children[1]));
     Ok(bool_expr)
 }
 
 fn parse_order(tree: &ParseTree) -> Result<Vec<Order>, ParseErr> {
-    assert_node_type(tree, NodeType::Sort);
+    try!(assert_node_type(tree, NodeType::Sort));
 
     let mut child_iter = tree.children.iter();
-    assert_opt_tree_sql_type(child_iter.next(), SqlType::Order);
-    assert_opt_tree_sql_type(child_iter.next(), SqlType::By);
+    try!(assert_opt_tree_sql_type(child_iter.next(), SqlType::Order));
+    try!(assert_opt_tree_sql_type(child_iter.next(), SqlType::By));
 
     parse_separated_list(&mut child_iter, |_, child| {
-        assert_node_type(child, NodeType::SortField);
+        try!(assert_node_type(child, NodeType::SortField));
 
-        let field_name = typed_node_token(&child.children[0], SqlType::Literal).text.clone();
+        let field_name = try!(typed_node_token(&child.children[0], SqlType::Literal)).text.clone();
 
         let dir = if let Some(dir_tree) = child.children.get(1) {
-            let dir_token = node_token(&dir_tree);
+            let dir_token = try!(node_token(&dir_tree));
             match dir_token.sql_type {
                 SqlType::Asc => Direction::Asc,
                 SqlType::Desc => Direction::Desc,
@@ -413,11 +415,10 @@ fn parse_order(tree: &ParseTree) -> Result<Vec<Order>, ParseErr> {
 }
 
 fn parse_limit(tree: &ParseTree) -> Result<Limit, ParseErr> {
-    assert_node_type(tree, NodeType::Limit);
+    try!(assert_node_type(tree, NodeType::Limit));
+    try!(assert_tree_sql_type(&tree.children[0], SqlType::Limit));
 
-    assert_tree_sql_type(&tree.children[0], SqlType::Limit);
-
-    let token = node_token(&tree.children[1]);
+    let token = try!(node_token(&tree.children[1]));
     match token.sql_type {
         SqlType::All => {
             Ok(Limit::All)
@@ -437,11 +438,10 @@ fn parse_limit(tree: &ParseTree) -> Result<Limit, ParseErr> {
 }
 
 fn parse_offset(tree: &ParseTree) -> Result<i64, ParseErr> {
-    assert_node_type(tree, NodeType::Offset);
+    try!(assert_node_type(tree, NodeType::Offset));
+    try!(assert_tree_sql_type(&tree.children[0], SqlType::Offset));
 
-    assert_tree_sql_type(&tree.children[0], SqlType::Offset);
-
-    let token = node_token(&tree.children[1]);
+    let token = try!(node_token(&tree.children[1]));
     match token.sql_type {
         SqlType::Int => {
             let offset = token.text.parse::<i64>().unwrap();
@@ -529,12 +529,12 @@ pub fn parse(tree: &ParseTree) -> Result<Query, ParseErr> {
     })
 }
 
-fn find_first_token(tree: &ParseTree) -> Option<&Token> {
+fn find_first_token(tree: &ParseTree) -> Option<Token> {
     let mut current_tree_opt = Some(tree);
 
     while let Some(current_tree) = current_tree_opt {
         match current_tree.node_type {
-            NodeType::Concrete(ref token) => { return Some(token) },
+            NodeType::Concrete(ref token) => { return Some(token.clone()) },
             _ => {
                 current_tree_opt = current_tree.children.get(0);
             }
@@ -544,61 +544,54 @@ fn find_first_token(tree: &ParseTree) -> Option<&Token> {
     None
 }
 
-fn assert_node_type(tree: &ParseTree, expected_type: NodeType) {
-    if tree.node_type != expected_type {
-        panic!("Expected type {:?}, got {:?}", expected_type, tree.node_type);
+fn assert_node_type(tree: &ParseTree, expected_type: NodeType) -> Result<(), ParseErr> {
+    if tree.node_type == expected_type {
+        Ok(())
+    } else {
+        Err(ParseErr { token: find_first_token(tree) })
     }
 }
 
-fn assert_tree_sql_type(tree: &ParseTree, sql_type: SqlType) {
+fn assert_tree_sql_type(tree: &ParseTree, sql_type: SqlType) -> Result<(), ParseErr> {
     match tree.node_type {
         NodeType::Concrete(ref token) => {
-            if token.sql_type != sql_type {
-                panic!("Expected {:?}, got {:?}", sql_type, token.sql_type);
+            if token.sql_type == sql_type {
+                Ok(())
+            } else {
+                Err(ParseErr { token: Some(token.clone()) })
             }
         },
         _ => {
-            panic!("Invalid node type: {:?}", tree.node_type);
+            Err(ParseErr { token: find_first_token(tree) })
         }
     }
 }
 
-fn assert_opt_tree_sql_type(tree_opt: Option<&ParseTree>, sql_type: SqlType) {
+fn assert_opt_tree_sql_type(tree_opt: Option<&ParseTree>, sql_type: SqlType) -> Result<(), ParseErr> {
     if let Some(tree) = tree_opt {
-        assert_tree_sql_type(tree, sql_type);
+        assert_tree_sql_type(tree, sql_type)
     } else {
-        panic!("Tree missing!");
+        Err(ParseErr { token: None})
     }
 }
 
-fn node_sql_type(tree: &ParseTree) -> SqlType {
+fn node_token(tree: &ParseTree) -> Result<&Token, ParseErr> {
     match tree.node_type {
         NodeType::Concrete(ref token) => {
-            token.sql_type.clone()
+            Ok(token)
         },
         _ => {
-            panic!("Waddup");
+            Err(ParseErr { token: find_first_token(tree) })
         }
     }
 }
 
-fn node_token(tree: &ParseTree) -> &Token {
-    match tree.node_type {
-        NodeType::Concrete(ref token) => {
-            token
-        },
-        _ => {
-            panic!("Expected Concrete, found {:?}", tree.node_type);
-        }
-    }
-}
-
-fn typed_node_token(tree: &ParseTree, sql_type: SqlType) -> &Token {
-    let token = node_token(tree);
+fn typed_node_token(tree: &ParseTree, sql_type: SqlType) -> Result<&Token, ParseErr> {
+    let token = try!(node_token(tree));
     if token.sql_type == sql_type {
-        token
+        Ok(token)
     } else {
-        panic!("Expected {:?}, received {:?}", sql_type, token.sql_type);
+        Err(ParseErr { token: Some(token.clone()) })
     }
 }
 
@@ -619,8 +612,10 @@ fn parse_separated_list <'a, I, F, T> (iter: &mut I, parse_fn: F) -> Result<Vec<
         if i & 1 == 0 {
             Some(parse_fn(i, child))
         } else {
-            assert_tree_sql_type(child, SqlType::Separator);
-            None
+            match assert_tree_sql_type(child, SqlType::Separator) {
+                Ok(_) => None,
+                Err(e) => Some(Err(e))
+            }
         }
     }).collect::<Result<Vec<T>, ParseErr>>();
 
@@ -632,7 +627,7 @@ fn parse_separated_list <'a, I, F, T> (iter: &mut I, parse_fn: F) -> Result<Vec<
     } else {
         // Dangling separator
         if let Some(last_tree) = last_tree_opt {
-            Err(ParseErr{ token: find_first_token(last_tree).map(|token| token.clone()) })
+            Err(ParseErr{ token: find_first_token(last_tree) })
         } else {
             Err(ParseErr{ token: None })
         }
